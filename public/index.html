@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#17130f" />
+    <title>SamJoE CRM</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+
+    <section class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
+      <div class="login-brand">
+        <div class="brand-mark" aria-hidden="true"><span>S</span></div>
+        <p class="eyebrow">SAMJOE SALES ENGINE</p>
+        <h1>Relacionamentos que viram <em>bons negócios.</em></h1>
+        <p class="login-copy">Acompanhe clientes, catálogo e permissões de contato em uma operação simples e centralizada.</p>
+        <div class="login-feature">
+          <span class="feature-icon">↗</span>
+          <div><strong>Ambiente local</strong><small>Seus dados ficam na infraestrutura de testes.</small></div>
+        </div>
+      </div>
+
+      <form class="login-card" id="loginForm">
+        <div class="mobile-logo"><span>S</span> SamJoE</div>
+        <p class="eyebrow">BEM-VINDO DE VOLTA</p>
+        <h2 id="loginTitle">Entre no seu CRM</h2>
+        <p class="muted">Use o acesso configurado no ambiente local.</p>
+
+        <label>Empresa
+          <input name="tenant_slug" value="samjoe-confeitaria" autocomplete="organization" required />
+        </label>
+        <label>E-mail
+          <input name="email" type="email" value="admin@samjoe.local" autocomplete="username" required />
+        </label>
+        <label>Senha
+          <div class="password-field">
+            <input id="passwordInput" name="password" type="password" autocomplete="current-password" minlength="8" required />
+            <button class="icon-button" id="togglePassword" type="button" aria-label="Mostrar senha" title="Mostrar senha">◉</button>
+          </div>
+        </label>
+        <button class="primary-button login-button" type="submit"><span>Entrar no painel</span><span>→</span></button>
+        <p class="form-error" id="loginError" role="alert"></p>
+        <p class="login-hint">A senha está no arquivo <code>.env</code> do Sales Engine.</p>
+      </form>
+    </section>
+
+    <div class="app-shell is-hidden" id="appShell">
+      <aside class="sidebar" id="sidebar">
+        <div class="logo"><span class="brand-mark small"><span>S</span></span><div><strong>SamJoE</strong><small>Sales Engine</small></div></div>
+        <nav aria-label="Navegação principal">
+          <p class="nav-label">PRINCIPAL</p>
+          <button class="nav-item is-active" data-view="dashboard"><span>⌂</span> Visão geral</button>
+          <button class="nav-item" data-view="contacts"><span>♙</span> Contatos <b id="contactNavCount">0</b></button>
+          <button class="nav-item" data-view="products"><span>◇</span> Produtos</button>
+          <button class="nav-item" data-view="campaigns"><span>◈</span> Campanhas <b id="campaignNavCount">0</b></button>
+          <p class="nav-label">OPERAÇÃO</p>
+          <button class="nav-item" data-view="integrations"><span>⚡</span> Integrações</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="api-state"><i id="apiDot"></i><div><strong id="apiStateText">Verificando API</strong><small id="apiStateSub">localhost:4010</small></div></div>
+          <button class="user-card" id="logoutButton" type="button" title="Sair da sessão">
+            <span class="avatar" id="userInitial">S</span><span><strong id="userEmail">Usuário</strong><small id="userRole">Operação local</small></span><span>↪</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <button class="menu-button" id="menuButton" aria-label="Abrir menu">☰</button>
+          <div><p class="breadcrumb">SAMJOE / <span id="breadcrumb">VISÃO GERAL</span></p><h1 id="pageTitle">Visão geral</h1></div>
+          <div class="top-actions"><span class="environment-pill"><i></i> Ambiente local</span><button class="icon-button refresh-button" id="refreshButton" title="Atualizar dados" aria-label="Atualizar dados">↻</button></div>
+        </header>
+
+        <div class="page-content">
+          <section class="view is-active" id="dashboardView">
+            <div class="welcome-row"><div><h2>Bom trabalho, <span id="welcomeName">time SamJoE</span>.</h2><p>Este é o panorama atual da sua base comercial.</p></div><button class="primary-button" data-open="contact"><span>＋</span> Novo contato</button></div>
+            <div class="metrics-grid">
+              <article class="metric-card accent"><div class="metric-head"><span>BASE DE CONTATOS</span><i>♙</i></div><strong id="metricContacts">—</strong><p><span id="metricNewContacts">0 novos</span> nos últimos 30 dias</p></article>
+              <article class="metric-card"><div class="metric-head"><span>PROSPECTS ATIVOS</span><i>↗</i></div><strong id="metricProspects">—</strong><p>Contatos no início do funil</p></article>
+              <article class="metric-card"><div class="metric-head"><span>PRODUTOS ATIVOS</span><i>◇</i></div><strong id="metricProducts">—</strong><p>Itens disponíveis no catálogo</p></article>
+              <article class="metric-card"><div class="metric-head"><span>SEM CONTATO</span><i>⊘</i></div><strong id="metricOptOut">—</strong><p>Opt-outs respeitados pelo CRM</p></article>
+            </div>
+
+            <div class="dashboard-grid">
+              <article class="panel stage-panel">
+                <div class="panel-head"><div><p class="eyebrow">FUNIL COMERCIAL</p><h3>Contatos por etapa</h3></div><button class="text-button" data-go="contacts">Ver contatos →</button></div>
+                <div class="stage-list" id="stageList"></div>
+              </article>
+              <article class="panel activity-panel">
+                <div class="panel-head"><div><p class="eyebrow">ÚLTIMOS REGISTROS</p><h3>Contatos recentes</h3></div></div>
+                <div class="activity-list" id="recentContacts"></div>
+              </article>
+            </div>
+
+            <article class="next-step-card">
+              <div class="next-icon">⚡</div><div><p class="eyebrow">PRÓXIMA CONEXÃO</p><h3>Transformar conversas em oportunidades</h3><p>O n8n e o WhatsApp já estão ativos. O próximo checkpoint liga as mensagens recebidas ao histórico deste CRM.</p></div><button class="secondary-button" data-go="integrations">Ver integrações</button>
+            </article>
+          </section>
+
+          <section class="view" id="contactsView">
+            <div class="section-toolbar"><div><h2>Contatos</h2><p>Gerencie a base e as permissões de WhatsApp.</p></div><button class="primary-button" data-open="contact">＋ Novo contato</button></div>
+            <div class="filters"><label class="search-box"><span>⌕</span><input id="contactSearch" type="search" placeholder="Buscar por nome, telefone ou e-mail" /></label><select id="stageFilter" aria-label="Filtrar por etapa"><option value="">Todas as etapas</option></select></div>
+            <div class="table-panel"><div class="table-wrap"><table><thead><tr><th>Contato</th><th>Etapa</th><th>Origem</th><th>Permissão</th><th>Cadastro</th><th></th></tr></thead><tbody id="contactsTableBody"></tbody></table></div><div class="empty-state is-hidden" id="contactsEmpty"><span>♙</span><h3>Nenhum contato encontrado</h3><p>Cadastre o primeiro contato ou ajuste sua busca.</p></div></div>
+          </section>
+
+          <section class="view" id="productsView">
+            <div class="section-toolbar"><div><h2>Produtos</h2><p>Consulte preços e custos estimados do catálogo.</p></div><button class="primary-button" data-open="product">＋ Novo produto</button></div>
+            <div class="filters"><label class="search-box"><span>⌕</span><input id="productSearch" type="search" placeholder="Buscar por produto, SKU ou categoria" /></label></div>
+            <div class="product-grid" id="productGrid"></div><div class="empty-state is-hidden" id="productsEmpty"><span>◇</span><h3>Nenhum produto encontrado</h3><p>Cadastre o primeiro item do catálogo.</p></div>
+          </section>
+
+          <section class="view" id="campaignsView">
+            <div class="section-toolbar"><div><h2>Campanhas</h2><p>Crie e analise o alcance de uma campanha antes de disparar.</p></div><button class="primary-button" data-open="campaign"><span>＋</span> Nova campanha</button></div>
+            <div class="table-panel">
+              <div class="table-wrap"><table><thead><tr><th>Campanha</th><th>Status</th><th>Elegíveis</th><th>Mensagem</th><th>Criada</th><th></th></tr></thead><tbody id="campaignsTableBody"></tbody></table></div>
+              <div class="empty-state is-hidden" id="campaignsEmpty"><span>◈</span><h3>Nenhuma campanha ainda</h3><p>Crie uma campanha para analisar a elegibilidade dos contatos.</p></div>
+            </div>
+            <div class="preflight-panel is-hidden" id="preflightPanel">
+              <div class="panel-head"><div><p class="eyebrow">ANÁLISE DE ELEGIBILIDADE</p><h3 id="preflightCampaignName">—</h3></div><button class="icon-button" id="closePreflightButton" title="Fechar análise" aria-label="Fechar análise">×</button></div>
+              <div id="preflightContent"></div>
+            </div>
+          </section>
+
+          <section class="view" id="integrationsView">
+            <div class="section-toolbar"><div><h2>Integrações</h2><p>Acompanhe os componentes da operação local.</p></div></div>
+            <div class="integration-grid">
+              <article class="integration-card"><div class="integration-logo api-logo">API</div><div class="integration-copy"><div><h3>Sales Engine API</h3><span class="status-badge success" id="apiBadge">Verificando</span></div><p>Autenticação, contatos, consentimentos e produtos.</p><code>http://localhost:4010</code></div></article>
+              <article class="integration-card"><div class="integration-logo n8n-logo">n8n</div><div class="integration-copy"><div><h3>Automação n8n</h3><span class="status-badge neutral">Configurada</span></div><p>Fluxos de atendimento e automações do WhatsApp.</p><a href="http://localhost:5679" target="_blank" rel="noreferrer">Abrir n8n ↗</a></div></article>
+              <article class="integration-card"><div class="integration-logo wa-logo">W</div><div class="integration-copy"><div><h3>Evolution API</h3><span class="status-badge neutral">Configurada</span></div><p>Instância local responsável pela conexão com WhatsApp.</p><a href="http://localhost:8081" target="_blank" rel="noreferrer">Abrir Evolution ↗</a></div></article>
+            </div>
+            <article class="roadmap-panel"><p class="eyebrow">ROADMAP DE INTEGRAÇÃO</p><h3>Do WhatsApp ao CRM</h3><div class="roadmap"><div class="roadmap-step done"><b>1</b><span><strong>Infraestrutura</strong><small>PostgreSQL, API e containers</small></span></div><i></i><div class="roadmap-step current"><b>2</b><span><strong>Painel CRM</strong><small>Visualização e cadastros</small></span></div><i></i><div class="roadmap-step"><b>3</b><span><strong>Conversas</strong><small>Eventos do n8n no histórico</small></span></div><i></i><div class="roadmap-step"><b>4</b><span><strong>Campanhas</strong><small>Segmentação e métricas</small></span></div></div></article>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop is-hidden" id="modalBackdrop">
+      <section class="modal" id="contactModal" role="dialog" aria-modal="true" aria-labelledby="contactModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">NOVO REGISTRO</p><h2 id="contactModalTitle">Adicionar contato</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
+        <form id="contactForm">
+          <div class="form-grid"><label class="full">Nome completo<input name="fullName" placeholder="Ex.: Maria Silva" required minlength="2" /></label><label>WhatsApp<input name="phone" inputmode="tel" placeholder="(11) 99999-9999" /></label><label>E-mail<input name="email" type="email" placeholder="maria@email.com" /></label><label>Origem<select name="origin" required><option value="manual">Cadastro manual</option><option value="whatsapp">WhatsApp</option><option value="instagram">Instagram</option><option value="indicacao">Indicação</option><option value="site">Site</option></select></label><label>Etapa<select name="stage" id="contactStage"></select></label><label class="full">Tags<input name="tags" placeholder="vip, bolo no pote, atacado" /><small>Separe as tags por vírgula.</small></label><label class="full">Observações<textarea name="notes" rows="3" placeholder="Preferências ou contexto comercial"></textarea></label></div>
+          <div class="modal-actions"><button class="secondary-button" type="button" data-close>Cancelar</button><button class="primary-button" type="submit">Salvar contato</button></div><p class="form-error" data-form-error></p>
+        </form>
+      </section>
+
+      <section class="modal" id="productModal" role="dialog" aria-modal="true" aria-labelledby="productModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">NOVO ITEM</p><h2 id="productModalTitle">Adicionar produto</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
+        <form id="productForm"><div class="form-grid"><label>SKU<input name="sku" placeholder="BP-BRIG-120" required /></label><label>Categoria<input name="category" placeholder="Bolo no pote" required /></label><label class="full">Nome do produto<input name="name" placeholder="Bolo no pote de brigadeiro" required /></label><label>Preço de venda (R$)<input name="price" type="number" min="0" step="0.01" placeholder="12,00" required /></label><label>Custo estimado (R$)<input name="cost" type="number" min="0" step="0.01" placeholder="4,50" /></label><label class="full">Fonte do custo<input name="costSource" placeholder="Ficha técnica, estimativa manual..." /></label></div><div class="modal-actions"><button class="secondary-button" type="button" data-close>Cancelar</button><button class="primary-button" type="submit">Salvar produto</button></div><p class="form-error" data-form-error></p></form>
+      </section>
+
+      <section class="modal" id="campaignModal" role="dialog" aria-modal="true" aria-labelledby="campaignModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">NOVA CAMPANHA</p><h2 id="campaignModalTitle">Criar campanha</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
+        <form id="campaignForm">
+          <div class="form-grid">
+            <label class="full">Nome da campanha<input name="name" placeholder="Promoção de aniversário" required minlength="2" maxlength="180" /></label>
+            <label class="full">Objetivo (opcional)<input name="objective" placeholder="Reativar clientes inativos do mês" maxlength="500" /></label>
+            <label class="full">Mensagem <small>máx. 4000 caracteres</small><textarea name="messageText" rows="4" placeholder="Oi! Temos algo especial para você..." required maxlength="4000"></textarea></label>
+            <label class="full">Link (opcional)<input name="linkUrl" type="url" placeholder="https://..." /></label>
+            <label>Intervalo mínimo entre envios<select name="minIntervalHours"><option value="24">24 horas</option><option value="48">2 dias</option><option value="72">3 dias</option><option value="168" selected>7 dias</option><option value="336">14 dias</option><option value="720">30 dias</option></select></label>
+            <label>Máximo em 30 dias<select name="maxNotificationsPer30d"><option value="1">1 mensagem</option><option value="2">2 mensagens</option><option value="3">3 mensagens</option><option value="4" selected>4 mensagens</option><option value="6">6 mensagens</option><option value="8">8 mensagens</option></select></label>
+            <label class="full"><span class="checkbox-row"><input name="includeConverted" type="checkbox" checked />Incluir contatos que já compraram</span></label>
+            <label class="full">Etapas do público <small>vazio = todas | ex.: prospect, interested</small><input name="audienceStages" placeholder="prospect, interested, repeat_buyer" /></label>
+            <label class="full">Origens do público <small>vazio = todas | ex.: whatsapp, instagram</small><input name="audienceOrigins" placeholder="whatsapp, instagram, manual" /></label>
+            <label class="full">Tags necessárias <small>qualquer uma das listadas</small><input name="audienceTags" placeholder="vip, atacado, bolo no pote" /></label>
+          </div>
+          <div class="modal-actions"><button class="secondary-button" type="button" data-close>Cancelar</button><button class="primary-button" type="submit">Criar campanha</button></div>
+          <p class="form-error" data-form-error></p>
+        </form>
+      </section>
+
+      <section class="modal compact" id="consentModal" role="dialog" aria-modal="true" aria-labelledby="consentModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">PRIVACIDADE</p><h2 id="consentModalTitle">Permissão de contato</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
+        <form id="consentForm"><input name="contactId" type="hidden" /><p class="consent-contact" id="consentContactName"></p><label>Ação<select name="action"><option value="granted">Autorizar mensagens</option><option value="revoked">Revogar autorização</option></select></label><label>Finalidade<select name="purpose"><option value="marketing">Marketing e ofertas</option><option value="order_updates">Atualizações de pedidos</option></select></label><label>Origem do registro<select name="source"><option value="manual_crm">Registro manual no CRM</option><option value="whatsapp">Confirmação via WhatsApp</option><option value="formulario">Formulário</option></select></label><div class="modal-actions"><button class="secondary-button" type="button" data-close>Cancelar</button><button class="primary-button" type="submit">Registrar</button></div><p class="form-error" data-form-error></p></form>
+      </section>
+    </div>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

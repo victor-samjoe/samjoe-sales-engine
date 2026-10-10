@@ -35,6 +35,14 @@ async function login(app: FastifyInstance, seeded: Awaited<ReturnType<typeof see
 }
 
 describe('API foundation', () => {
+  it('serves the CRM interface', async () => {
+    const { app } = await setup();
+    const response = await app.inject({ method: 'GET', url: '/' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/html');
+    expect(response.body).toContain('SamJoE CRM');
+  });
+
   it('reports health and database connectivity', async () => {
     const { app } = await setup();
     const response = await app.inject({ method: 'GET', url: '/health' });
@@ -124,6 +132,107 @@ describe('API foundation', () => {
       [contactId, seeded.tenantId],
     );
     expect(projection.rows[0]?.do_not_contact).toBe(true);
+  });
+
+  it('creates a campaign and generates an eligibility preflight without sending', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const authorization = { authorization: `Bearer ${token}` };
+
+    const eligibleContact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: authorization,
+      payload: { fullName: 'Cliente Elegível', phone: '(11) 98888-1111', origin: 'whatsapp' },
+    });
+    const eligibleId = eligibleContact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${eligibleId}/consents`, headers: authorization,
+      payload: {
+        channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp',
+        policyVersion: '1.0', occurredAt: new Date().toISOString(),
+      },
+    });
+    await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: authorization,
+      payload: { fullName: 'Cliente Sem Consentimento', phone: '(11) 98888-2222', origin: 'manual' },
+    });
+
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: authorization,
+      payload: {
+        name: 'Teste controlado', messageText: 'Mensagem de teste',
+        minIntervalHours: 168, maxNotificationsPer30d: 3,
+        audienceRules: { origins: ['whatsapp', 'manual'] },
+        assets: [{ type: 'image', url: 'https://cdn.example.test/campaign.jpg' }],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const campaignId = created.json<{ id: string }>().id;
+
+    const preflight = await app.inject({
+      method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: authorization,
+    });
+    expect(preflight.statusCode).toBe(200);
+    const report = preflight.json<{
+      totals: { evaluated: number; eligible: number; excluded: number };
+      excluded_by_reason: Record<string, number>;
+      exposure_bands: { never_received: { contacts: number } };
+      recipients: Array<{ contact_id: string; eligible: boolean }>;
+    }>();
+    expect(report.totals).toEqual({ evaluated: 2, eligible: 1, excluded: 1 });
+    expect(report.excluded_by_reason.marketing_consent_missing).toBe(1);
+    expect(report.exposure_bands.never_received.contacts).toBe(1);
+    expect(report.recipients.find((item) => item.contact_id === eligibleId)?.eligible).toBe(true);
+
+    const savedReport = await app.inject({
+      method: 'GET', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: authorization,
+    });
+    expect(savedReport.statusCode).toBe(200);
+    expect(savedReport.json<{ ready: boolean }>().ready).toBe(true);
+  });
+
+  it('patches a draft campaign and resets its snapshot', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers,
+      payload: { name: 'Campanha original', messageText: 'Texto original' },
+    });
+    expect(created.statusCode).toBe(201);
+    const campaignId = created.json<{ id: string }>().id;
+
+    const preflight = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers });
+    expect(preflight.statusCode).toBe(200);
+
+    const status = await app.inject({ method: 'GET', url: `/api/v1/campaigns/${campaignId}`, headers });
+    expect(status.json<{ status: string; snapshot_hash: string }>().status).toBe('preflight_ready');
+    expect(status.json<{ snapshot_hash: string }>().snapshot_hash).toBeTruthy();
+
+    const patched = await app.inject({
+      method: 'PATCH', url: `/api/v1/campaigns/${campaignId}`, headers,
+      payload: { name: 'Campanha editada', messageText: 'Texto atualizado' },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json<{ status: string; name: string; snapshot_hash: null }>().status).toBe('draft');
+    expect(patched.json<{ name: string }>().name).toBe('Campanha editada');
+    expect(patched.json<{ snapshot_hash: null }>().snapshot_hash).toBeNull();
+  });
+
+  it('keeps campaigns isolated by tenant', async () => {
+    const { app, db, seeded } = await setup();
+    const firstToken = await login(app, seeded);
+    await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: { authorization: `Bearer ${firstToken}` },
+      payload: { name: 'Campanha privada', messageText: 'Somente tenant principal' },
+    });
+    const other = await seedTestTenant(db, { slug: 'other-campaign-tenant', email: 'campaign@other.test' });
+    const otherToken = await login(app, other);
+    const response = await app.inject({
+      method: 'GET', url: '/api/v1/campaigns', headers: { authorization: `Bearer ${otherToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ data: unknown[] }>().data).toHaveLength(0);
   });
 });
 

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
@@ -8,8 +8,11 @@ import type { Database } from '../../src/core/db.js';
 export async function createTestDatabase(): Promise<Database> {
   const memory = newDb({ autoCreateForeignKeyIndices: true });
   memory.public.registerFunction({ name: 'now', returns: DataType.timestamptz, implementation: () => new Date() });
-  const migration = await readFile(resolve('migrations/001_initial.sql'), 'utf8');
-  memory.public.none(migration);
+  const migrationFiles = (await readdir(resolve('migrations'))).filter((file) => file.endsWith('.sql')).sort();
+  for (const file of migrationFiles) {
+    const migration = await readFile(resolve('migrations', file), 'utf8');
+    memory.public.none(migration);
+  }
   const adapter = memory.adapters.createPg();
   const pool = new adapter.Pool();
   return pool as unknown as Database;

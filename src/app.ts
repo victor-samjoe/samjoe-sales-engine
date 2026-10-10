@@ -8,6 +8,8 @@ import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { contactRoutes } from './routes/contacts.js';
 import { productRoutes } from './routes/products.js';
+import { crmRoutes } from './routes/crm.js';
+import { campaignRoutes } from './routes/campaigns.js';
 
 export async function buildApp(options: {
   db: Database;
@@ -58,5 +60,7 @@ export async function buildApp(options: {
   await authRoutes(app, options.db, options.config.jwtExpiresIn);
   await contactRoutes(app, options.db);
   await productRoutes(app, options.db);
+  await campaignRoutes(app, options.db);
+  await crmRoutes(app);
   return app;
 }
