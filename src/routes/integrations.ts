@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { Database } from '../core/db.js';
@@ -43,6 +44,22 @@ const FoodAppEventBody = Type.Object({
 });
 
 export async function integrationRoutes(app: FastifyInstance, db: Database) {
+  // Capture raw body for HMAC verification without replacing Fastify's default JSON parser.
+  // preParsing runs before the body is parsed; we buffer the stream, store the raw string,
+  // then return a new Readable with the same bytes so normal parsing continues unchanged.
+  app.addHook('preParsing', async (request, _reply, payload) => {
+    const ct = request.headers['content-type'] ?? '';
+    if (!ct.includes('application/json')) return payload;
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as unknown as string));
+    }
+    const rawBuffer = Buffer.concat(chunks);
+    (request as FastifyRequest & { rawBody: string }).rawBody = rawBuffer.toString('utf8');
+    // Return the original bytes so Fastify's Content-Length check is not affected.
+    return Readable.from([rawBuffer]);
+  });
+
   app.get('/api/v1/integrations/foodapp', { onRequest: [app.authenticate] }, async (request, reply) => {
     const config = await getFoodAppConfig(db, request.user.tenantId);
     if (!config) return reply.code(404).send({ data: null });
@@ -64,15 +81,7 @@ export async function integrationRoutes(app: FastifyInstance, db: Database) {
     return { data: config };
   });
 
-  // Webhook — scoped plugin to capture raw body for HMAC verification
-  await app.register(async (scope: FastifyInstance) => {
-    scope.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body: string, done) => {
-      (req as FastifyRequest & { rawBody: string }).rawBody = body;
-      try { done(null, JSON.parse(body)); }
-      catch (e) { done(e as Error, undefined); }
-    });
-
-    scope.post('/api/v1/integrations/foodapp/events', {
+  app.post('/api/v1/integrations/foodapp/events', {
       schema: { body: FoodAppEventBody },
     }, async (request, reply) => {
       const tenantId = (request.headers['x-tenant-id'] as string | undefined)?.trim();
@@ -114,5 +123,4 @@ export async function integrationRoutes(app: FastifyInstance, db: Database) {
       }
       return reply.code(200).send({ accepted: true, event_type: result.event_type });
     });
-  });
 }

@@ -41,8 +41,14 @@ export async function buildApp(options: {
     }
   });
 
+  // Allow POSTs with no body (e.g. /preflight, /approve) regardless of Content-Type.
+  // PowerShell and some HTTP clients send application/x-www-form-urlencoded by default.
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
+    done(null, body ? body : null);
+  });
+
   app.setErrorHandler((error, request, reply) => {
-    const handledError = error as Error & { code?: string; validation?: unknown };
+    const handledError = error as Error & { code?: string; validation?: unknown; statusCode?: number };
     if (handledError.code === '23505') {
       return reply.code(409).send({
         error: { code: 'CONFLICT', message: 'Registro duplicado', request_id: request.id },
@@ -50,6 +56,12 @@ export async function buildApp(options: {
     }
     if (handledError.validation) {
       return reply.code(400).send({
+        error: { code: 'VALIDATION_ERROR', message: handledError.message, request_id: request.id },
+      });
+    }
+    // Pass through Fastify's own HTTP errors (content-type, media type, etc.) with their status codes.
+    if (typeof handledError.statusCode === 'number' && handledError.statusCode < 500) {
+      return reply.code(handledError.statusCode).send({
         error: { code: 'VALIDATION_ERROR', message: handledError.message, request_id: request.id },
       });
     }
