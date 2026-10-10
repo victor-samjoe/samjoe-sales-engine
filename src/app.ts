@@ -12,6 +12,7 @@ import { crmRoutes } from './routes/crm.js';
 import { campaignRoutes } from './routes/campaigns.js';
 import { dispatchRoutes } from './routes/dispatch.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { analyticsRoutes } from './routes/analytics.js';
 
 export async function buildApp(options: {
   db: Database;
@@ -65,6 +66,7 @@ export async function buildApp(options: {
   await campaignRoutes(app, options.db);
   await dispatchRoutes(app, options.db);
   await integrationRoutes(app, options.db);
+  await analyticsRoutes(app, options.db);
   await crmRoutes(app);
   return app;
 }

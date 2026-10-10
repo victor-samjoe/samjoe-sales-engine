@@ -56,6 +56,7 @@
           <button class="nav-item" data-view="contacts"><span>♙</span> Contatos <b id="contactNavCount">0</b></button>
           <button class="nav-item" data-view="products"><span>◇</span> Produtos</button>
           <button class="nav-item" data-view="campaigns"><span>◈</span> Campanhas <b id="campaignNavCount">0</b></button>
+          <button class="nav-item" data-view="results"><span>◉</span> Resultados</button>
           <p class="nav-label">OPERAÇÃO</p>
           <button class="nav-item" data-view="integrations"><span>⚡</span> Integrações</button>
         </nav>
@@ -121,6 +122,28 @@
             <div class="preflight-panel is-hidden" id="preflightPanel">
               <div class="panel-head"><div><p class="eyebrow">ANÁLISE DE ELEGIBILIDADE</p><h3 id="preflightCampaignName">—</h3></div><button class="icon-button" id="closePreflightButton" title="Fechar análise" aria-label="Fechar análise">×</button></div>
               <div id="preflightContent"></div>
+            </div>
+          </section>
+
+          <section class="view" id="resultsView">
+            <div class="section-toolbar"><div><h2>Resultados</h2><p>Performance de campanhas e receita atribuída.</p></div></div>
+            <div class="analytics-summary" id="analyticsSummary">
+              <div class="analytics-card"><p class="analytics-label">Campanhas ativas</p><p class="analytics-value" id="statCampaigns">—</p></div>
+              <div class="analytics-card"><p class="analytics-label">Total alcançados</p><p class="analytics-value" id="statReach">—</p></div>
+              <div class="analytics-card"><p class="analytics-label">Taxa de engajamento</p><p class="analytics-value" id="statEngagement">—</p></div>
+              <div class="analytics-card"><p class="analytics-label">Conversões atribuídas</p><p class="analytics-value" id="statConversions">—</p></div>
+              <div class="analytics-card analytics-card--revenue"><p class="analytics-label">Receita atribuída</p><p class="analytics-value" id="statRevenue">—</p></div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table" id="analyticsTable">
+                <thead><tr>
+                  <th>Campanha</th><th>Status</th><th>Alcance</th>
+                  <th class="col-num">Entregues</th><th class="col-num">Lidos</th>
+                  <th class="col-num">TX. Leitura</th><th class="col-num">Conversões</th>
+                  <th class="col-num">Receita</th><th class="col-num">Margem</th>
+                </tr></thead>
+                <tbody id="analyticsTableBody"><tr><td colspan="9" class="empty-state">Carregando…</td></tr></tbody>
+              </table>
             </div>
           </section>
 

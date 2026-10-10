@@ -617,3 +617,89 @@ describe('FoodApp integration (Fase 4)', () => {
   });
 });
 
+describe('Analytics (dashboard de conversões)', () => {
+  it('returns empty summary when no campaigns exist', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const res = await app.inject({ method: 'GET', url: '/api/v1/analytics/campaigns', headers: { authorization: `Bearer ${token}` } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ campaigns: unknown[]; summary: { total_campaigns: number; total_recipients: number; total_conversions: number } }>();
+    expect(body.campaigns).toHaveLength(0);
+    expect(body.summary.total_campaigns).toBe(0);
+    expect(body.summary.total_recipients).toBe(0);
+    expect(body.summary.total_conversions).toBe(0);
+  });
+
+  it('aggregates delivery stats and attributed revenue per campaign', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    // Create contact with consent
+    const contact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: h,
+      payload: { fullName: 'Analytics Test', phone: '(11) 96666-7777', origin: 'manual' },
+    });
+    const contactId = contact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
+      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+    });
+
+    // Campaign → preflight → approve → dispatch delivered
+    const camp = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: h,
+      payload: { name: 'Campanha Analytics', messageText: 'Teste analytics', minIntervalHours: 24 },
+    });
+    const campaignId = camp.json<{ id: string }>().id;
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+
+    const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
+    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0].recipient_id;
+
+    await app.inject({
+      method: 'POST', url: '/api/v1/dispatch/events', headers: h,
+      payload: { recipientId, eventType: 'read', provider: 'evolution', externalEventId: 'analytics-evt-001', occurredAt: new Date(Date.now() - 60_000).toISOString() },
+    });
+
+    // FoodApp order.paid → attribution
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+    const orderPayload = {
+      event_id: 'analytics-order-001',
+      event_type: 'order.paid',
+      occurred_at: new Date().toISOString(),
+      customer: { external_id: 'fa-analytics-001', phone: '(11) 96666-7777' },
+      order: { external_id: 'analytics-ord-001', total_cents: 8000, cost_cents: 3000 },
+    };
+    await app.inject({
+      method: 'POST', url: '/api/v1/integrations/foodapp/events',
+      headers: { ...foodappHeaders(orderPayload), 'x-tenant-id': seeded.tenantId },
+      payload: orderPayload,
+    });
+
+    // Fetch analytics
+    const res = await app.inject({ method: 'GET', url: '/api/v1/analytics/campaigns', headers: h });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{
+      campaigns: Array<{ id: string; name: string; read: number; engaged: number; conversions: number; revenue_cents: number; margin_cents: number }>;
+      summary: { total_campaigns: number; total_conversions: number; total_revenue_cents: number };
+    }>();
+
+    const stat = body.campaigns.find(c => c.id === campaignId);
+    expect(stat).toBeTruthy();
+    expect(stat!.read).toBe(1);
+    expect(stat!.engaged).toBe(1);
+    expect(stat!.conversions).toBe(1);
+    expect(stat!.revenue_cents).toBe(8000);
+    expect(stat!.margin_cents).toBe(5000);
+
+    expect(body.summary.total_conversions).toBe(1);
+    expect(body.summary.total_revenue_cents).toBe(8000);
+    expect(body.summary.total_campaigns).toBeGreaterThanOrEqual(1);
+  });
+});
+

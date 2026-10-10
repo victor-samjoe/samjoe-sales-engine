@@ -12,7 +12,7 @@
   };
   const viewLabels = {
     dashboard: 'Visão geral', contacts: 'Contatos', products: 'Produtos',
-    campaigns: 'Campanhas', integrations: 'Integrações',
+    campaigns: 'Campanhas', results: 'Resultados', integrations: 'Integrações',
   };
   const campaignStatusLabels = {
     draft: 'Rascunho', preflight_ready: 'Análise pronta', approved: 'Aprovada',
@@ -296,6 +296,7 @@
     $('#breadcrumb').textContent = viewLabels[view].toUpperCase();
     $('#sidebar').classList.remove('is-open');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (view === 'results') loadAnalytics().catch(() => {});
   }
 
   function openModal(type, detail = {}) {
@@ -551,6 +552,58 @@
     const options = Object.entries(stageLabels).map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
     $('#stageFilter').insertAdjacentHTML('beforeend', options);
     $('#contactStage').innerHTML = options;
+  }
+
+  function fmtBRL(cents) {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cents / 100);
+  }
+
+  function fmtPct(num, den) {
+    if (!den) return '—';
+    return Math.round((num / den) * 100) + '%';
+  }
+
+  function funnelBar(val, total) {
+    const pct = total > 0 ? Math.round((val / total) * 100) : 0;
+    return `<span class="funnel-bar"><span class="funnel-bar-track"><span class="funnel-bar-fill" style="width:${pct}%"></span></span>${val.toLocaleString('pt-BR')}</span>`;
+  }
+
+  async function loadAnalytics() {
+    try {
+      const result = await api('/api/v1/analytics/campaigns');
+      renderAnalytics(result);
+    } catch {
+      $('#analyticsTableBody').innerHTML = '<tr><td colspan="9" class="empty-state">Não foi possível carregar os resultados.</td></tr>';
+    }
+  }
+
+  function renderAnalytics({ campaigns, summary }) {
+    $('#statCampaigns').textContent = summary.total_campaigns.toLocaleString('pt-BR');
+    $('#statReach').textContent = summary.total_recipients.toLocaleString('pt-BR');
+    $('#statEngagement').textContent = summary.engagement_rate + '%';
+    $('#statConversions').textContent = summary.total_conversions.toLocaleString('pt-BR');
+    $('#statRevenue').textContent = fmtBRL(summary.total_revenue_cents);
+
+    const tbody = $('#analyticsTableBody');
+    if (!campaigns.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Nenhuma campanha ainda. Crie uma na view de Campanhas.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = campaigns.map(c => {
+      const engagedOfRecip = fmtPct(c.engaged, c.recipients);
+      const readOfEngaged = c.engaged > 0 ? Math.round((c.read / c.engaged) * 100) + '%' : '—';
+      return `<tr>
+        <td><strong>${escapeHtml(c.name)}</strong></td>
+        <td><span class="status-badge ${campaignStatusClass(c.status)}">${escapeHtml(campaignStatusLabels[c.status] ?? c.status)}</span></td>
+        <td>${c.recipients.toLocaleString('pt-BR')}</td>
+        <td class="col-num">${funnelBar(c.engaged, c.recipients)}</td>
+        <td class="col-num">${funnelBar(c.read, c.recipients)}</td>
+        <td class="col-num">${readOfEngaged}</td>
+        <td class="col-num">${c.conversions > 0 ? '<strong>' + c.conversions + '</strong>' : '—'}</td>
+        <td class="col-num">${c.revenue_cents > 0 ? fmtBRL(c.revenue_cents) : '—'}</td>
+        <td class="col-num">${c.margin_cents > 0 ? fmtBRL(c.margin_cents) : '—'}</td>
+      </tr>`;
+    }).join('');
   }
 
   async function loadFoodAppConfig() {

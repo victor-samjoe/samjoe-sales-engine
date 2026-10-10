@@ -220,6 +220,17 @@ tbody tr:hover { background: #fdfbf9; }
 .secondary-button.small { padding: 4px 10px; font-size: 11px; }
 .integration-last-event { color: var(--muted); font-size: 10px; margin-top: 4px; display: block; }
 .form-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 12px; padding: 10px 12px; background: var(--bg); border-radius: 8px; }
+.analytics-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.analytics-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.analytics-card--revenue { border-color: var(--brand-dark); background: var(--brand-soft); }
+.analytics-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 6px; }
+.analytics-value { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -.02em; }
+.analytics-card--revenue .analytics-value { color: var(--brand-dark); }
+.col-num { text-align: right; }
+.col-num td, td.col-num { text-align: right; }
+.funnel-bar { display: inline-flex; align-items: center; gap: 5px; }
+.funnel-bar-track { width: 60px; height: 5px; background: #eee; border-radius: 99px; overflow: hidden; }
+.funnel-bar-fill { height: 100%; border-radius: 99px; background: var(--brand-dark); }
 .roadmap-panel { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 25px; margin-top: 18px; }
 .roadmap { display: flex; align-items: center; margin-top: 28px; }
 .roadmap > i { height: 1px; flex: 1; min-width: 20px; background: #ddd5cc; }
