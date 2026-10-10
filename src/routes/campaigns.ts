@@ -3,7 +3,8 @@ import { Type } from '@sinclair/typebox';
 import type { Database } from '../core/db.js';
 import { writeAudit } from '../core/audit.js';
 import {
-  createCampaign, generateCampaignPreflight, getCampaign, getCampaignPreflight,
+  approveCampaign, cancelCampaign, createCampaign,
+  generateCampaignPreflight, getCampaign, getCampaignPreflight,
   listCampaigns, updateCampaign, type CampaignInput,
 } from '../services/campaign-service.js';
 
@@ -91,6 +92,33 @@ export async function campaignRoutes(app: FastifyInstance, db: Database) {
     if (result.kind === 'invalid_status') return reply.code(409).send({ error: { code: 'CAMPAIGN_LOCKED', message: `Campanha não pode ser analisada no status ${result.status}`, request_id: request.id } });
     await writeAudit(db, { tenantId: request.user.tenantId, actorUserId: request.user.sub, entityType: 'campaign', entityId: request.params.id, action: 'campaign.preflight_generated', metadata: { snapshot_hash: result.report.snapshot_hash, eligible: result.report.totals.eligible } });
     return result.report;
+  });
+
+  app.post<{ Params: { id: string } }>('/api/v1/campaigns/:id/approve', {
+    onRequest: [app.authenticate], schema: { params: CampaignParams },
+  }, async (request, reply) => {
+    if (!['owner', 'manager'].includes(request.user.role)) {
+      return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Apenas owner ou manager podem aprovar campanhas', request_id: request.id } });
+    }
+    const result = await approveCampaign(db, request.user.tenantId, request.params.id, request.user.sub);
+    if (result.kind === 'not_found') return reply.code(404).send({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada', request_id: request.id } });
+    if (result.kind === 'no_snapshot') return reply.code(409).send({ error: { code: 'NO_SNAPSHOT', message: 'Execute o preflight antes de aprovar', request_id: request.id } });
+    if (result.kind === 'invalid_status') return reply.code(409).send({ error: { code: 'CAMPAIGN_LOCKED', message: `Campanha não pode ser aprovada no status ${result.status}`, request_id: request.id } });
+    await writeAudit(db, { tenantId: request.user.tenantId, actorUserId: request.user.sub, entityType: 'campaign', entityId: request.params.id, action: 'campaign.approved', metadata: { snapshot_hash: result.snapshot_hash, queued: result.queued } });
+    return { queued: result.queued, snapshot_hash: result.snapshot_hash };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/v1/campaigns/:id/cancel', {
+    onRequest: [app.authenticate], schema: { params: CampaignParams },
+  }, async (request, reply) => {
+    if (!['owner', 'manager'].includes(request.user.role)) {
+      return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Apenas owner ou manager podem cancelar campanhas', request_id: request.id } });
+    }
+    const result = await cancelCampaign(db, request.user.tenantId, request.params.id);
+    if (result.kind === 'not_found') return reply.code(404).send({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada', request_id: request.id } });
+    if (result.kind === 'invalid_status') return reply.code(409).send({ error: { code: 'CAMPAIGN_LOCKED', message: `Campanha já está ${result.status}`, request_id: request.id } });
+    await writeAudit(db, { tenantId: request.user.tenantId, actorUserId: request.user.sub, entityType: 'campaign', entityId: request.params.id, action: 'campaign.cancelled', metadata: { cancelled_recipients: result.cancelled } });
+    return { cancelled: result.cancelled };
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/campaigns/:id/preflight', {

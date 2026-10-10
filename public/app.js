@@ -249,16 +249,24 @@
 
   function renderCampaigns() {
     const body = $('#campaignsTableBody');
-    const canAnalyse = (status) => status === 'draft' || status === 'preflight_ready';
-    body.innerHTML = state.campaigns.map((c) => `
-      <tr>
+    body.innerHTML = state.campaigns.map((c) => {
+      const canAnalyse = c.status === 'draft' || c.status === 'preflight_ready';
+      const canApprove = c.status === 'preflight_ready';
+      const canCancel = !['completed', 'cancelled'].includes(c.status);
+      const actions = [
+        canAnalyse ? `<button class="row-action" data-preflight-id="${c.id}" data-preflight-name="${escapeHtml(c.name)}">Analisar</button>` : '',
+        canApprove ? `<button class="row-action approve" data-approve-id="${c.id}" data-approve-name="${escapeHtml(c.name)}">Aprovar</button>` : '',
+        canCancel && c.status !== 'draft' ? `<button class="row-action cancel" data-cancel-id="${c.id}" data-cancel-name="${escapeHtml(c.name)}">Cancelar</button>` : '',
+      ].filter(Boolean).join(' ');
+      return `<tr>
         <td><strong>${escapeHtml(c.name)}</strong>${c.objective ? `<br><small class="muted">${escapeHtml(c.objective)}</small>` : ''}</td>
         <td><span class="status-badge ${escapeHtml(campaignStatusClass[c.status] || 'neutral')}">${escapeHtml(campaignStatusLabels[c.status] || c.status)}</span></td>
-        <td>${canAnalyse(c.status) && !c.snapshot_hash ? '<span class="muted">—</span>' : escapeHtml(String(c.eligible_count ?? 0))}</td>
+        <td>${canAnalyse && !c.snapshot_hash ? '<span class="muted">—</span>' : escapeHtml(String(c.eligible_count ?? 0))}</td>
         <td class="campaign-msg">${escapeHtml((c.message_text || '').slice(0, 90))}</td>
         <td>${shortDate(c.created_at)}</td>
-        <td>${canAnalyse(c.status) ? `<button class="row-action" data-preflight-id="${c.id}" data-preflight-name="${escapeHtml(c.name)}">Analisar</button>` : ''}</td>
-      </tr>`).join('');
+        <td style="white-space:nowrap">${actions}</td>
+      </tr>`;
+    }).join('');
     const empty = !state.campaigns.length;
     $('#campaignsEmpty').classList.toggle('is-hidden', !empty);
     $('.table-wrap', $('#campaignsTableBody').closest('.table-panel')).classList.toggle('is-hidden', empty);
@@ -403,9 +411,35 @@
     }
   }
 
+  async function approveCampaign(campaignId, campaignName) {
+    if (!confirm(`Aprovar campanha "${campaignName}"?\n\nIsso vai enfileirar os destinatários elegíveis para envio pelo n8n. Esta ação não pode ser desfeita sem cancelar a campanha.`)) return;
+    try {
+      const result = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/approve`, { method: 'POST' });
+      await loadData();
+      toast(`Campanha aprovada — ${result.queued} destinatário${result.queued !== 1 ? 's' : ''} na fila.`);
+      $('#preflightPanel').classList.add('is-hidden');
+    } catch (err) {
+      toast(`Erro ao aprovar: ${err.message}`, 'error');
+    }
+  }
+
+  async function cancelCampaign(campaignId, campaignName) {
+    if (!confirm(`Cancelar campanha "${campaignName}"?\n\nTodos os envios pendentes serão cancelados.`)) return;
+    try {
+      const result = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/cancel`, { method: 'POST' });
+      await loadData();
+      toast(`Campanha cancelada — ${result.cancelled} destinatário${result.cancelled !== 1 ? 's' : ''} removido${result.cancelled !== 1 ? 's' : ''} da fila.`);
+      $('#preflightPanel').classList.add('is-hidden');
+    } catch (err) {
+      toast(`Erro ao cancelar: ${err.message}`, 'error');
+    }
+  }
+
   async function runPreflight(campaignId, campaignName) {
     const panel = $('#preflightPanel');
     const content = $('#preflightContent');
+    panel.dataset.campaignId = campaignId;
+    panel.dataset.campaignName = campaignName;
     $('#preflightCampaignName').textContent = campaignName;
     panel.classList.remove('is-hidden');
     content.innerHTML = '<p class="list-placeholder">Calculando elegibilidade…</p>';
@@ -413,11 +447,18 @@
     try {
       const report = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/preflight`, { method: 'POST' });
       content.innerHTML = buildPreflightHtml(report);
+      bindApproveButton(campaignId, campaignName);
       await loadData();
       toast('Análise concluída.');
     } catch (err) {
       content.innerHTML = `<p class="form-error" style="padding:16px">${escapeHtml(err.message)}</p>`;
     }
+  }
+
+  function bindApproveButton(campaignId, campaignName) {
+    const btn = $('#approveFromPreflightBtn');
+    if (!btn) return;
+    btn.onclick = () => approveCampaign(campaignId, campaignName);
   }
 
   function buildPreflightHtml(report) {
@@ -474,6 +515,10 @@
         </table></div></div>
       ` : ''}
       <p class="muted" style="font-size:10px;margin-top:12px">Gerado em ${new Date(report.snapshot_created_at).toLocaleString('pt-BR')} · hash ${(report.snapshot_hash || '').slice(0, 12)}…</p>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)">
+        <p style="flex:1;font-size:11px;color:var(--muted);margin:0;align-self:center">Somente owner ou manager podem aprovar. O envio real requer n8n + Evolution configurados.</p>
+        <button class="primary-button" id="approveFromPreflightBtn" style="background:var(--green)">Aprovar e enfileirar →</button>
+      </div>
     `;
   }
 
@@ -531,8 +576,12 @@
       if (button) openModal('consent', { id: button.dataset.consentId, name: button.dataset.consentName });
     });
     $('#campaignsTableBody').addEventListener('click', (event) => {
-      const button = event.target.closest('[data-preflight-id]');
-      if (button) runPreflight(button.dataset.preflightId, button.dataset.preflightName);
+      const pf = event.target.closest('[data-preflight-id]');
+      if (pf) return runPreflight(pf.dataset.preflightId, pf.dataset.preflightName);
+      const ap = event.target.closest('[data-approve-id]');
+      if (ap) return approveCampaign(ap.dataset.approveId, ap.dataset.approveName);
+      const ca = event.target.closest('[data-cancel-id]');
+      if (ca) return cancelCampaign(ca.dataset.cancelId, ca.dataset.cancelName);
     });
     $('#closePreflightButton').addEventListener('click', () => $('#preflightPanel').classList.add('is-hidden'));
     $('#contactForm').addEventListener('submit', submitContact);

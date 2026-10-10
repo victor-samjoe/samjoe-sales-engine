@@ -319,6 +319,77 @@ function buildPreflightReport(
   };
 }
 
+export async function approveCampaign(db: Database, tenantId: string, campaignId: string, userId: string) {
+  const check = await db.query<{ status: string; snapshot_hash: string | null }>(
+    'SELECT status, snapshot_hash FROM campaigns WHERE id = $1 AND tenant_id = $2',
+    [campaignId, tenantId],
+  );
+  const campaign = check.rows[0];
+  if (!campaign) return { kind: 'not_found' as const };
+  if (campaign.status !== 'preflight_ready') return { kind: 'invalid_status' as const, status: campaign.status };
+  if (!campaign.snapshot_hash) return { kind: 'no_snapshot' as const };
+
+  const now = new Date();
+  await db.query(
+    `UPDATE campaigns SET status = 'approved', approved_by = $1, approved_at = $2, updated_at = now()
+     WHERE id = $3 AND tenant_id = $4`,
+    [userId, now.toISOString(), campaignId, tenantId],
+  );
+
+  const eligible = await db.query<{ id: string; contact_id: string }>(
+    `SELECT id, contact_id FROM campaign_recipients
+     WHERE campaign_id = $1 AND tenant_id = $2 AND eligible = true AND delivery_status = 'pending'`,
+    [campaignId, tenantId],
+  );
+  for (const r of eligible.rows) {
+    await db.query(
+      `UPDATE campaign_recipients SET delivery_status = 'queued', queued_at = $1 WHERE id = $2 AND tenant_id = $3`,
+      [now.toISOString(), r.id, tenantId],
+    );
+    await db.query(
+      `INSERT INTO notification_events
+        (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, 'queued', $6)`,
+      [randomUUID(), tenantId, campaignId, r.id, r.contact_id, now.toISOString()],
+    );
+  }
+  return { kind: 'ok' as const, queued: eligible.rows.length, snapshot_hash: campaign.snapshot_hash };
+}
+
+export async function cancelCampaign(db: Database, tenantId: string, campaignId: string) {
+  const check = await db.query<{ status: string }>(
+    'SELECT status FROM campaigns WHERE id = $1 AND tenant_id = $2',
+    [campaignId, tenantId],
+  );
+  const campaign = check.rows[0];
+  if (!campaign) return { kind: 'not_found' as const };
+  if (['completed', 'cancelled'].includes(campaign.status)) {
+    return { kind: 'invalid_status' as const, status: campaign.status };
+  }
+
+  const now = new Date();
+  await db.query(
+    `UPDATE campaigns SET status = 'cancelled', updated_at = now() WHERE id = $1 AND tenant_id = $2`,
+    [campaignId, tenantId],
+  );
+
+  const cancelled = await db.query<{ id: string; contact_id: string }>(
+    `UPDATE campaign_recipients SET delivery_status = 'cancelled'
+     WHERE campaign_id = $1 AND tenant_id = $2 AND delivery_status IN ('pending', 'queued')
+     RETURNING id, contact_id`,
+    [campaignId, tenantId],
+  );
+  for (const r of cancelled.rows) {
+    await db.query(
+      `INSERT INTO notification_events
+        (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, 'cancelled', $6)`,
+      [randomUUID(), tenantId, campaignId, r.id, r.contact_id, now.toISOString()],
+    );
+  }
+  return { kind: 'ok' as const, cancelled: cancelled.rows.length };
+}
+
 export async function updateCampaign(db: Database, tenantId: string, campaignId: string, input: Partial<CampaignInput>) {
   const check = await db.query<{ status: string }>(
     'SELECT status FROM campaigns WHERE id = $1 AND tenant_id = $2',

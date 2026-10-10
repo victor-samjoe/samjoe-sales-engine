@@ -10,6 +10,7 @@ import { contactRoutes } from './routes/contacts.js';
 import { productRoutes } from './routes/products.js';
 import { crmRoutes } from './routes/crm.js';
 import { campaignRoutes } from './routes/campaigns.js';
+import { dispatchRoutes } from './routes/dispatch.js';
 
 export async function buildApp(options: {
   db: Database;
@@ -61,6 +62,7 @@ export async function buildApp(options: {
   await contactRoutes(app, options.db);
   await productRoutes(app, options.db);
   await campaignRoutes(app, options.db);
+  await dispatchRoutes(app, options.db);
   await crmRoutes(app);
   return app;
 }

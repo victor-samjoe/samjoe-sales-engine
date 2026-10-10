@@ -234,5 +234,128 @@ describe('API foundation', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json<{ data: unknown[] }>().data).toHaveLength(0);
   });
+
+  it('approves campaign and queues eligible recipients', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    const contact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: h,
+      payload: { fullName: 'Aprovado Fictício', phone: '(11) 97777-1111', origin: 'whatsapp' },
+    });
+    const contactId = contact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
+      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+    });
+
+    const camp = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: h,
+      payload: { name: 'Campanha aprovação', messageText: 'Olá!' },
+    });
+    const campaignId = camp.json<{ id: string }>().id;
+
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
+
+    const approve = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+    expect(approve.statusCode).toBe(200);
+    expect(approve.json<{ queued: number }>().queued).toBe(1);
+
+    const jobs = await app.inject({ method: 'GET', url: '/api/v1/dispatch/jobs', headers: h });
+    expect(jobs.statusCode).toBe(200);
+    const jobList = jobs.json<{ data: Array<{ recipient_id: string; phone_e164: string }> }>();
+    expect(jobList.data).toHaveLength(1);
+    expect(jobList.data[0].phone_e164).toBe('+5511977771111');
+
+    const reApprove = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+    expect(reApprove.statusCode).toBe(409);
+  });
+
+  it('processes dispatch events idempotently and updates contact outbound', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    const contact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: h,
+      payload: { fullName: 'Dispatch Test', phone: '(11) 96666-2222', origin: 'whatsapp' },
+    });
+    const contactId = contact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
+      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+    });
+
+    const camp = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: h,
+      payload: { name: 'Dispatch Campanha', messageText: 'Teste dispatch', minIntervalHours: 24 },
+    });
+    const campaignId = camp.json<{ id: string }>().id;
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+
+    const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
+    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0].recipient_id;
+
+    const deliveredAt = new Date().toISOString();
+    const event1 = await app.inject({
+      method: 'POST', url: '/api/v1/dispatch/events', headers: h,
+      payload: { recipientId, eventType: 'delivered', provider: 'evolution', externalEventId: 'evt-001', occurredAt: deliveredAt },
+    });
+    expect(event1.statusCode).toBe(200);
+    expect(event1.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    const event1Again = await app.inject({
+      method: 'POST', url: '/api/v1/dispatch/events', headers: h,
+      payload: { recipientId, eventType: 'delivered', provider: 'evolution', externalEventId: 'evt-001', occurredAt: deliveredAt },
+    });
+    expect(event1Again.json<{ accepted: boolean; reason: string }>().accepted).toBe(false);
+    expect(event1Again.json<{ reason: string }>().reason).toBe('duplicate');
+
+    const contactRow = await db.query<{ last_outbound_at: Date | null; next_eligible_at: Date | null }>(
+      'SELECT last_outbound_at, next_eligible_at FROM contacts WHERE id = $1 AND tenant_id = $2',
+      [contactId, seeded.tenantId],
+    );
+    expect(contactRow.rows[0].last_outbound_at).toBeTruthy();
+    expect(contactRow.rows[0].next_eligible_at).toBeTruthy();
+    const nextEligible = new Date(contactRow.rows[0].next_eligible_at!);
+    const delivered = new Date(deliveredAt);
+    expect(nextEligible.getTime()).toBeGreaterThan(delivered.getTime());
+  });
+
+  it('cancels an approved campaign and marks queued recipients as cancelled', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    const contact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: h,
+      payload: { fullName: 'Cancel Test', phone: '(11) 95555-3333', origin: 'manual' },
+    });
+    const contactId = contact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
+      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+    });
+
+    const camp = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: h,
+      payload: { name: 'Campanha cancelar', messageText: 'Será cancelada' },
+    });
+    const campaignId = camp.json<{ id: string }>().id;
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/cancel`, headers: h });
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json<{ cancelled: number }>().cancelled).toBe(1);
+
+    const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
+    expect(jobs.json<{ data: unknown[] }>().data).toHaveLength(0);
+
+    const cancelAgain = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/cancel`, headers: h });
+    expect(cancelAgain.statusCode).toBe(409);
+  });
 });
 
