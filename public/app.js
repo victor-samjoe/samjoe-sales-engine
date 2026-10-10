@@ -531,8 +531,13 @@
     const error = $('[data-form-error]', form);
     error.textContent = '';
     const values = Object.fromEntries(new FormData(form));
+    const purposes = Array.from(form.querySelectorAll('[name="purposes"]:checked')).map((el) => el.value);
+    if (!purposes.length) {
+      error.textContent = 'Selecione ao menos uma finalidade.';
+      return;
+    }
     const payload = {
-      channel: 'whatsapp', purpose: values.purpose, action: values.action,
+      channel: 'whatsapp', purposes, action: values.action,
       source: values.source, policyVersion: '1.0', occurredAt: new Date().toISOString(),
     };
     setButtonLoading(submit, true, 'Registrando...');

@@ -273,6 +273,10 @@ tbody tr:hover { background: #fdfbf9; }
 .form-grid .full { grid-column: 1 / -1; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 6px; }
 .consent-contact { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 13px; font-weight: 800; margin: -8px 0 20px; }
+.purposes-fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.purposes-fieldset legend { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); padding: 0 4px; }
+.checkbox-label { display: flex; align-items: center; gap: 9px; font-size: 14px; cursor: pointer; }
+.checkbox-label input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 .toast-region { position: fixed; z-index: 100; right: 24px; bottom: 24px; display: grid; gap: 10px; }
 .toast { width: min(360px, calc(100vw - 48px)); color: #fff; background: #28231e; border-radius: 11px; padding: 14px 16px; box-shadow: var(--shadow); font-size: 12px; animation: toastIn .22s ease both; }
 .toast.success { border-left: 4px solid #55bc85; }

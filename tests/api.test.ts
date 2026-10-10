@@ -123,7 +123,7 @@ describe('API foundation', () => {
       url: `/api/v1/contacts/${contactId}/consents`,
       headers: { authorization: `Bearer ${token}` },
       payload: {
-        channel: 'whatsapp', purpose: 'marketing', action: 'revoked',
+        channel: 'whatsapp', purposes: ['marketing'], action: 'revoked',
         source: 'manual', policyVersion: '1.0', occurredAt: new Date().toISOString(),
       },
     });
@@ -148,7 +148,7 @@ describe('API foundation', () => {
     await app.inject({
       method: 'POST', url: `/api/v1/contacts/${eligibleId}/consents`, headers: authorization,
       payload: {
-        channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp',
+        channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp',
         policyVersion: '1.0', occurredAt: new Date().toISOString(),
       },
     });
@@ -248,7 +248,7 @@ describe('API foundation', () => {
     const contactId = contact.json<{ id: string }>().id;
     await app.inject({
       method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
-      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+      payload: { channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
     });
 
     const camp = await app.inject({
@@ -285,7 +285,7 @@ describe('API foundation', () => {
     const contactId = contact.json<{ id: string }>().id;
     await app.inject({
       method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
-      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+      payload: { channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
     });
 
     const camp = await app.inject({
@@ -337,7 +337,7 @@ describe('API foundation', () => {
     const contactId = contact.json<{ id: string }>().id;
     await app.inject({
       method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
-      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+      payload: { channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
     });
 
     const camp = await app.inject({
@@ -483,7 +483,7 @@ describe('FoodApp integration (Fase 4)', () => {
     const contactId = contact.json<{ id: string }>().id;
     await app.inject({
       method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
-      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+      payload: { channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
     });
 
     // Campaign → preflight → approve → dispatch delivered
@@ -643,7 +643,7 @@ describe('Analytics (dashboard de conversões)', () => {
     const contactId = contact.json<{ id: string }>().id;
     await app.inject({
       method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
-      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+      payload: { channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
     });
 
     // Campaign → preflight → approve → dispatch delivered

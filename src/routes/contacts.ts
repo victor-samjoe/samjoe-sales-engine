@@ -3,7 +3,7 @@ import { Type } from '@sinclair/typebox';
 import type { Database } from '../core/db.js';
 import { writeAudit } from '../core/audit.js';
 import { CONTACT_STAGES, createContact, listContacts, type ContactInput } from '../services/contact-service.js';
-import { recordConsent, type ConsentInput } from '../services/consent-service.js';
+import { recordConsents, type ConsentInput } from '../services/consent-service.js';
 
 const ContactBody = Type.Object({
   fullName: Type.String({ minLength: 2, maxLength: 180 }),
@@ -15,9 +15,11 @@ const ContactBody = Type.Object({
   notes: Type.Optional(Type.String({ maxLength: 2000 })),
 });
 
+const PurposeEnum = Type.Union([Type.Literal('marketing'), Type.Literal('order_updates')]);
+
 const ConsentBody = Type.Object({
   channel: Type.String({ minLength: 2, maxLength: 30 }),
-  purpose: Type.Union([Type.Literal('marketing'), Type.Literal('order_updates')]),
+  purposes: Type.Array(PurposeEnum, { minItems: 1, maxItems: 2 }),
   action: Type.Union([Type.Literal('granted'), Type.Literal('revoked')]),
   source: Type.String({ minLength: 2, maxLength: 60 }),
   evidenceRef: Type.Optional(Type.String({ maxLength: 255 })),
@@ -57,14 +59,14 @@ export async function contactRoutes(app: FastifyInstance, db: Database) {
       body: ConsentBody,
     },
   }, async (request, reply) => {
-    const consent = await recordConsent(
+    const consents = await recordConsents(
       db,
       request.user.tenantId,
       request.params.id,
       request.user.sub,
       request.body,
     );
-    if (!consent) {
+    if (!consents) {
       return reply.code(404).send({
         error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado', request_id: request.id },
       });
@@ -73,11 +75,11 @@ export async function contactRoutes(app: FastifyInstance, db: Database) {
       tenantId: request.user.tenantId,
       actorUserId: request.user.sub,
       entityType: 'consent_event',
-      entityId: String((consent as { id: string }).id),
+      entityId: request.params.id,
       action: `consent.${request.body.action}`,
-      metadata: { contact_id: request.params.id, purpose: request.body.purpose, channel: request.body.channel },
+      metadata: { contact_id: request.params.id, purposes: request.body.purposes, channel: request.body.channel },
     });
-    return reply.code(201).send(consent);
+    return reply.code(201).send({ data: consents });
   });
 }
 

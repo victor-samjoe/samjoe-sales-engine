@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '../core/db.js';
 import { normalizeBrazilianPhone } from '../domain/phone.js';
+import { recordConsents } from './consent-service.js';
 
 export type FoodAppCustomer = {
   external_id: string;
@@ -181,7 +182,14 @@ export async function processFoodAppEvent(db: Database, tenantId: string, event:
       const created = await createContactFromFoodApp(db, tenantId, customer);
       id = created?.id ?? null;
     }
-    if (id) await ensureExternalLink(db, tenantId, id, customer.external_id);
+    if (id) {
+      await ensureExternalLink(db, tenantId, id, customer.external_id);
+      // Implicitly grant order_updates consent — the customer placed an order on the app.
+      await recordConsents(db, tenantId, id, null, {
+        channel: 'foodapp', purposes: ['order_updates'], action: 'granted',
+        source: 'foodapp_signup', policyVersion: '1.0', occurredAt: occurred_at,
+      });
+    }
     await touchIntegration(db, tenantId, occurred_at);
     return { kind: 'ok' as const, event_type, contact_id: id };
   }
