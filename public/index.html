@@ -130,6 +130,7 @@
               <article class="integration-card"><div class="integration-logo api-logo">API</div><div class="integration-copy"><div><h3>Sales Engine API</h3><span class="status-badge success" id="apiBadge">Verificando</span></div><p>Autenticação, contatos, consentimentos e produtos.</p><code>http://localhost:4010</code></div></article>
               <article class="integration-card"><div class="integration-logo n8n-logo">n8n</div><div class="integration-copy"><div><h3>Automação n8n</h3><span class="status-badge neutral">Configurada</span></div><p>Fluxos de atendimento e automações do WhatsApp.</p><a href="http://localhost:5679" target="_blank" rel="noreferrer">Abrir n8n ↗</a></div></article>
               <article class="integration-card"><div class="integration-logo wa-logo">W</div><div class="integration-copy"><div><h3>Evolution API</h3><span class="status-badge neutral">Configurada</span></div><p>Instância local responsável pela conexão com WhatsApp.</p><a href="http://localhost:8081" target="_blank" rel="noreferrer">Abrir Evolution ↗</a></div></article>
+              <article class="integration-card" id="foodappCard"><div class="integration-logo fa-logo">F</div><div class="integration-copy"><div><h3>FoodApp</h3><span class="status-badge neutral" id="foodappBadge">Não configurado</span></div><p>Receba pedidos e sincronize clientes automaticamente.</p><div class="integration-actions"><code id="foodappWebhookUrl">http://localhost:4010/api/v1/integrations/foodapp/events</code><div class="integration-buttons"><button class="secondary-button small" id="copyWebhookBtn" title="Copiar URL do webhook">Copiar URL</button><button class="secondary-button small" id="openFoodappModalBtn">Configurar</button></div></div><small class="integration-last-event is-hidden" id="foodappLastEvent"></small></div></article>
             </div>
             <article class="roadmap-panel"><p class="eyebrow">ROADMAP DE INTEGRAÇÃO</p><h3>Do WhatsApp ao CRM</h3><div class="roadmap"><div class="roadmap-step done"><b>1</b><span><strong>Infraestrutura</strong><small>PostgreSQL, API e containers</small></span></div><i></i><div class="roadmap-step current"><b>2</b><span><strong>Painel CRM</strong><small>Visualização e cadastros</small></span></div><i></i><div class="roadmap-step"><b>3</b><span><strong>Conversas</strong><small>Eventos do n8n no histórico</small></span></div><i></i><div class="roadmap-step"><b>4</b><span><strong>Campanhas</strong><small>Segmentação e métricas</small></span></div></div></article>
           </section>
@@ -174,6 +175,19 @@
       <section class="modal compact" id="consentModal" role="dialog" aria-modal="true" aria-labelledby="consentModalTitle">
         <div class="modal-head"><div><p class="eyebrow">PRIVACIDADE</p><h2 id="consentModalTitle">Permissão de contato</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
         <form id="consentForm"><input name="contactId" type="hidden" /><p class="consent-contact" id="consentContactName"></p><label>Ação<select name="action"><option value="granted">Autorizar mensagens</option><option value="revoked">Revogar autorização</option></select></label><label>Finalidade<select name="purpose"><option value="marketing">Marketing e ofertas</option><option value="order_updates">Atualizações de pedidos</option></select></label><label>Origem do registro<select name="source"><option value="manual_crm">Registro manual no CRM</option><option value="whatsapp">Confirmação via WhatsApp</option><option value="formulario">Formulário</option></select></label><div class="modal-actions"><button class="secondary-button" type="button" data-close>Cancelar</button><button class="primary-button" type="submit">Registrar</button></div><p class="form-error" data-form-error></p></form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop is-hidden" id="foodappModalBackdrop">
+      <section class="modal" id="foodappModal" role="dialog" aria-modal="true" aria-labelledby="foodappModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">INTEGRAÇÃO</p><h2 id="foodappModalTitle">Configurar FoodApp</h2></div><button class="icon-button" data-close-foodapp aria-label="Fechar">×</button></div>
+        <form id="foodappForm">
+          <p class="form-note">O FoodApp enviará eventos para o webhook abaixo assinados com a chave HMAC configurada aqui.</p>
+          <label>Chave HMAC <small>(mínimo 8 caracteres — deixe em branco para manter a atual)</small><input name="hmacSecret" type="password" autocomplete="new-password" placeholder="••••••••••••••••" maxlength="512" /></label>
+          <label>Status<select name="status"><option value="active">Ativo</option><option value="disabled">Desativado</option></select></label>
+          <div class="modal-actions"><button class="secondary-button" type="button" data-close-foodapp>Cancelar</button><button class="primary-button" type="submit">Salvar</button></div>
+          <p class="form-error" data-form-error></p>
+        </form>
       </section>
     </div>
 

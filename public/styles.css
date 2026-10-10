@@ -203,17 +203,23 @@ tbody tr:hover { background: #fdfbf9; }
 .product-price strong { color: var(--ink); font-family: Georgia, serif; font-size: 21px; }
 .product-price small { color: var(--muted); }
 
-.integration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
+.integration-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }
 .integration-card { display: flex; gap: 15px; background: #fff; border: 1px solid var(--line); padding: 20px; border-radius: 14px; }
 .integration-logo { width: 48px; height: 48px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 12px; font-weight: 900; font-size: 12px; }
 .api-logo { color: var(--brand-dark); background: var(--brand-soft); }
 .n8n-logo { color: #a6441d; background: #fee6dd; }
 .wa-logo { color: #18764b; background: #e2f4e9; font-size: 18px; }
+.fa-logo { color: #c04f1a; background: #fde8d8; font-size: 20px; }
 .integration-copy { flex: 1; min-width: 0; }
 .integration-copy > div { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .integration-copy h3 { font-family: Georgia, serif; margin: 0; font-size: 17px; }
 .integration-copy p { color: var(--muted); font-size: 11px; line-height: 1.5; min-height: 34px; }
 .integration-copy code, .integration-copy a { color: var(--brand-dark); font-size: 10px; text-decoration: none; word-break: break-all; }
+.integration-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.integration-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.secondary-button.small { padding: 4px 10px; font-size: 11px; }
+.integration-last-event { color: var(--muted); font-size: 10px; margin-top: 4px; display: block; }
+.form-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 12px; padding: 10px 12px; background: var(--bg); border-radius: 8px; }
 .roadmap-panel { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 25px; margin-top: 18px; }
 .roadmap { display: flex; align-items: center; margin-top: 28px; }
 .roadmap > i { height: 1px; flex: 1; min-width: 20px; background: #ddd5cc; }

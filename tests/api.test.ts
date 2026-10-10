@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { createTestDatabase, seedTestTenant } from './helpers/test-db.js';
@@ -356,6 +357,263 @@ describe('API foundation', () => {
 
     const cancelAgain = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/cancel`, headers: h });
     expect(cancelAgain.statusCode).toBe(409);
+  });
+});
+
+const HMAC_SECRET = 'super-secret-foodapp-key-32chars!';
+
+function foodappHeaders(payload: unknown, secret = HMAC_SECRET): Record<string, string> {
+  const body = JSON.stringify(payload);
+  const sig = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+  return {
+    'content-type': 'application/json',
+    'x-foodapp-signature': sig,
+    'x-foodapp-timestamp': new Date().toISOString(),
+  };
+}
+
+describe('FoodApp integration (Fase 4)', () => {
+  it('configures FoodApp integration and retrieves config', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    const put = await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json<{ data: { status: string } }>().data.status).toBe('active');
+
+    const get = await app.inject({ method: 'GET', url: '/api/v1/integrations/foodapp', headers: h });
+    expect(get.statusCode).toBe(200);
+    expect(get.json<{ data: { status: string } }>().data.status).toBe('active');
+    expect(JSON.stringify(get.json())).not.toContain(HMAC_SECRET);
+  });
+
+  it('rejects webhook with invalid HMAC signature', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: { authorization: `Bearer ${token}` },
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+
+    const payload = { event_id: 'e-001', event_type: 'customer.created', occurred_at: new Date().toISOString(), customer: { external_id: 'c-001' } };
+    const badHeaders = {
+      'content-type': 'application/json',
+      'x-foodapp-signature': 'sha256=badhash',
+      'x-foodapp-timestamp': new Date().toISOString(),
+      'x-tenant-id': seeded.tenantId,
+    };
+    const res = await app.inject({ method: 'POST', url: '/api/v1/integrations/foodapp/events', headers: badHeaders, payload });
+    expect(res.statusCode).toBe(401);
+    expect(res.json<{ error: { code: string } }>().error.code).toBe('INVALID_SIGNATURE');
+  });
+
+  it('rejects webhook with expired timestamp', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: { authorization: `Bearer ${token}` },
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+
+    const payload = { event_id: 'e-002', event_type: 'customer.created', occurred_at: new Date().toISOString(), customer: { external_id: 'c-002' } };
+    const oldTs = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const body = JSON.stringify(payload);
+    const sig = 'sha256=' + createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/integrations/foodapp/events',
+      headers: { 'content-type': 'application/json', 'x-foodapp-signature': sig, 'x-foodapp-timestamp': oldTs, 'x-tenant-id': seeded.tenantId },
+      payload,
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json<{ error: { code: string } }>().error.code).toBe('REPLAY_DETECTED');
+  });
+
+  it('customer.created creates contact and external link via phone lookup', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+
+    const payload = {
+      event_id: 'cust-create-001',
+      event_type: 'customer.created',
+      occurred_at: new Date().toISOString(),
+      customer: { external_id: 'fa-cust-001', phone: '(11) 97777-1234', name: 'João FoodApp' },
+    };
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/integrations/foodapp/events',
+      headers: { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    const link = await db.query(
+      `SELECT contact_id FROM external_customer_links WHERE tenant_id = $1 AND source = 'foodapp' AND external_customer_id = 'fa-cust-001'`,
+      [seeded.tenantId],
+    );
+    expect(link.rows).toHaveLength(1);
+
+    const contact = await db.query(
+      `SELECT full_name, phone_e164 FROM contacts WHERE id = $1`,
+      [link.rows[0].contact_id],
+    );
+    expect(contact.rows[0].full_name).toBe('João FoodApp');
+    expect(contact.rows[0].phone_e164).toBe('+5511977771234');
+  });
+
+  it('order.paid records conversion with last-touch attribution and updates last_purchase_at', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+
+    // Create contact with consent
+    const contact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers: h,
+      payload: { fullName: 'Maria Conversão', phone: '(11) 97777-5555', origin: 'manual' },
+    });
+    const contactId = contact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers: h,
+      payload: { channel: 'whatsapp', purpose: 'marketing', action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+    });
+
+    // Campaign → preflight → approve → dispatch delivered
+    const camp = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers: h,
+      payload: { name: 'Campanha Conversão', messageText: 'Compre agora', minIntervalHours: 24, conversionWindowDays: 7 },
+    });
+    const campaignId = camp.json<{ id: string }>().id;
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+
+    const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
+    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0].recipient_id;
+
+    const deliveredAt = new Date(Date.now() - 60_000).toISOString();
+    await app.inject({
+      method: 'POST', url: '/api/v1/dispatch/events', headers: h,
+      payload: { recipientId, eventType: 'delivered', provider: 'evolution', externalEventId: 'disp-evt-001', occurredAt: deliveredAt },
+    });
+
+    // Configure FoodApp
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+
+    // Send order.paid via FoodApp webhook — customer matched by phone
+    const orderedAt = new Date().toISOString();
+    const payload = {
+      event_id: 'order-paid-001',
+      event_type: 'order.paid',
+      occurred_at: orderedAt,
+      customer: { external_id: 'fa-maria-001', phone: '(11) 97777-5555' },
+      order: { external_id: 'ord-001', total_cents: 4990, cost_cents: 1500 },
+    };
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/integrations/foodapp/events',
+      headers: { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    const conversion = await db.query<{ campaign_id: string; revenue_cents: number; margin_cents: number; status: string }>(
+      `SELECT campaign_id, revenue_cents, margin_cents, status FROM campaign_conversions WHERE tenant_id = $1 AND source = 'foodapp'`,
+      [seeded.tenantId],
+    );
+    expect(conversion.rows).toHaveLength(1);
+    expect(conversion.rows[0].campaign_id).toBe(campaignId);
+    expect(conversion.rows[0].revenue_cents).toBe(4990);
+    expect(conversion.rows[0].margin_cents).toBe(3490);
+    expect(conversion.rows[0].status).toBe('paid');
+
+    const contactRow = await db.query<{ last_purchase_at: Date | null }>(
+      `SELECT last_purchase_at FROM contacts WHERE id = $1 AND tenant_id = $2`,
+      [contactId, seeded.tenantId],
+    );
+    expect(contactRow.rows[0].last_purchase_at).toBeTruthy();
+  });
+
+  it('order.paid is idempotent — duplicate event returns accepted:false', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+
+    const payload = {
+      event_id: 'order-dup-001',
+      event_type: 'order.paid',
+      occurred_at: new Date().toISOString(),
+      customer: { external_id: 'fa-dup-001' },
+      order: { external_id: 'ord-dup-001', total_cents: 2000 },
+    };
+    const tenantHeaders = { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId };
+    const first = await app.inject({ method: 'POST', url: '/api/v1/integrations/foodapp/events', headers: tenantHeaders, payload });
+    expect(first.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    const second = await app.inject({ method: 'POST', url: '/api/v1/integrations/foodapp/events', headers: { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId }, payload });
+    expect(second.json<{ accepted: boolean; reason?: string }>().accepted).toBe(false);
+    expect(second.json<{ reason: string }>().reason).toBe('duplicate');
+  });
+
+  it('order.refunded reverses an existing paid conversion', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const h = { authorization: `Bearer ${token}` };
+    await app.inject({
+      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      payload: { hmacSecret: HMAC_SECRET, status: 'active' },
+    });
+
+    // First pay
+    const paidPayload = {
+      event_id: 'order-refund-evt-pay',
+      event_type: 'order.paid',
+      occurred_at: new Date(Date.now() - 5000).toISOString(),
+      customer: { external_id: 'fa-refund-001' },
+      order: { external_id: 'ord-refund-001', total_cents: 9900 },
+    };
+    await app.inject({
+      method: 'POST', url: '/api/v1/integrations/foodapp/events',
+      headers: { ...foodappHeaders(paidPayload), 'x-tenant-id': seeded.tenantId },
+      payload: paidPayload,
+    });
+
+    // Then refund
+    const refundPayload = {
+      event_id: 'order-refund-evt-ref',
+      event_type: 'order.refunded',
+      occurred_at: new Date().toISOString(),
+      customer: { external_id: 'fa-refund-001' },
+      order: { external_id: 'ord-refund-001', total_cents: 0 },
+    };
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/integrations/foodapp/events',
+      headers: { ...foodappHeaders(refundPayload), 'x-tenant-id': seeded.tenantId },
+      payload: refundPayload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    const conv = await db.query<{ status: string; revenue_cents: number }>(
+      `SELECT status, revenue_cents FROM campaign_conversions WHERE tenant_id = $1 AND source = 'foodapp' AND external_order_id = 'ord-refund-001'`,
+      [seeded.tenantId],
+    );
+    expect(conv.rows[0].status).toBe('refunded');
+    expect(conv.rows[0].revenue_cents).toBe(0);
   });
 });
 

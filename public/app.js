@@ -167,6 +167,7 @@
       state.products = productsResult.data || [];
       state.campaigns = campaignsResult.data || [];
       renderAll();
+      loadFoodAppConfig().catch(() => {});
       if (showConfirmation) toast('Dados atualizados.');
     } catch (err) {
       toast(`Não foi possível carregar os dados: ${err.message}`, 'error');
@@ -552,6 +553,64 @@
     $('#contactStage').innerHTML = options;
   }
 
+  async function loadFoodAppConfig() {
+    try {
+      const result = await api('/api/v1/integrations/foodapp');
+      const cfg = result.data;
+      const badge = $('#foodappBadge');
+      const lastEvent = $('#foodappLastEvent');
+      if (!cfg) {
+        badge.textContent = 'Não configurado';
+        badge.className = 'status-badge neutral';
+        lastEvent.classList.add('is-hidden');
+      } else if (cfg.status === 'active') {
+        badge.textContent = 'Ativo';
+        badge.className = 'status-badge success';
+        if (cfg.last_event_at) {
+          lastEvent.textContent = `Último evento: ${new Date(cfg.last_event_at).toLocaleString('pt-BR')}`;
+          lastEvent.classList.remove('is-hidden');
+        } else {
+          lastEvent.classList.add('is-hidden');
+        }
+      } else {
+        badge.textContent = 'Desativado';
+        badge.className = 'status-badge warning';
+        lastEvent.classList.add('is-hidden');
+      }
+    } catch {
+      // integration not configured yet — ignore 404
+    }
+  }
+
+  function openFoodappModal() {
+    $('#foodappModalBackdrop').classList.remove('is-hidden');
+    $('#foodappForm').reset();
+    $('[data-form-error]', $('#foodappForm')).textContent = '';
+  }
+
+  function closeFoodappModal() {
+    $('#foodappModalBackdrop').classList.add('is-hidden');
+  }
+
+  async function submitFoodappForm(event) {
+    event.preventDefault();
+    const form = $('#foodappForm');
+    const error = $('[data-form-error]', form);
+    error.textContent = '';
+    const fd = new FormData(form);
+    const payload = { status: fd.get('status') };
+    const secret = fd.get('hmacSecret')?.trim();
+    if (secret) payload.hmacSecret = secret;
+    try {
+      await api('/api/v1/integrations/foodapp', { method: 'PUT', body: JSON.stringify(payload) });
+      closeFoodappModal();
+      await loadFoodAppConfig();
+      toast('Integração FoodApp salva.');
+    } catch (err) {
+      error.textContent = err.message;
+    }
+  }
+
   function bindEvents() {
     $('#loginForm').addEventListener('submit', login);
     $('#logoutButton').addEventListener('click', () => logout());
@@ -588,6 +647,17 @@
     $('#productForm').addEventListener('submit', submitProduct);
     $('#consentForm').addEventListener('submit', submitConsent);
     $('#campaignForm').addEventListener('submit', submitCampaign);
+    $('#openFoodappModalBtn').addEventListener('click', openFoodappModal);
+    $$('[data-close-foodapp]').forEach((el) => el.addEventListener('click', closeFoodappModal));
+    $('#foodappModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeFoodappModal(); });
+    $('#foodappForm').addEventListener('submit', submitFoodappForm);
+    $('#copyWebhookBtn').addEventListener('click', () => {
+      const url = $('#foodappWebhookUrl').textContent;
+      navigator.clipboard.writeText(url).then(
+        () => toast('URL do webhook copiada.'),
+        () => toast('Não foi possível copiar.', 'error'),
+      );
+    });
   }
 
   async function init() {
