@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: sales_engine
+      POSTGRES_USER: sales_engine
+      POSTGRES_PASSWORD: sales_engine
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - sales_engine_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sales_engine -d sales_engine"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  sales_engine_postgres:
+
