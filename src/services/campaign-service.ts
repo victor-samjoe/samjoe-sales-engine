@@ -248,18 +248,26 @@ export async function generateCampaignPreflight(db: Database, tenantId: string, 
   }));
 
   await db.query('DELETE FROM campaign_recipients WHERE campaign_id = $1 AND tenant_id = $2', [campaignId, tenantId]);
-  for (const item of evaluated) {
+  if (evaluated.length > 0) {
     await db.query(
       `INSERT INTO campaign_recipients
         (id, tenant_id, campaign_id, contact_id, eligible, exclusion_reasons_json,
          prior_delivery_count, prior_conversion_count, prior_revenue_cents,
          prior_margin_cents, snapshot_created_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)`,
+       SELECT unnest($1::uuid[]), $2, $3, unnest($4::uuid[]), unnest($5::boolean[]),
+              unnest($6::jsonb[]), unnest($7::int[]), unnest($8::int[]),
+              unnest($9::numeric[]), unnest($10::numeric[]), $11`,
       [
-        randomUUID(), tenantId, campaignId, item.contact.id, item.result.eligible,
-        JSON.stringify(item.result.reasons), item.result.priorDeliveryCount,
-        item.result.priorConversionCount, item.result.priorRevenueCents,
-        item.result.priorMarginCents, now.toISOString(),
+        evaluated.map(() => randomUUID()),
+        tenantId, campaignId,
+        evaluated.map((i) => i.contact.id),
+        evaluated.map((i) => i.result.eligible),
+        evaluated.map((i) => JSON.stringify(i.result.reasons)),
+        evaluated.map((i) => i.result.priorDeliveryCount),
+        evaluated.map((i) => i.result.priorConversionCount),
+        evaluated.map((i) => i.result.priorRevenueCents),
+        evaluated.map((i) => i.result.priorMarginCents),
+        now.toISOString(),
       ],
     );
   }
@@ -348,20 +356,23 @@ export async function approveCampaign(db: Database, tenantId: string, campaignId
   );
 
   const eligible = await db.query<{ id: string; contact_id: string }>(
-    `SELECT id, contact_id FROM campaign_recipients
-     WHERE campaign_id = $1 AND tenant_id = $2 AND eligible = true AND delivery_status = 'pending'`,
-    [campaignId, tenantId],
+    `UPDATE campaign_recipients SET delivery_status = 'queued', queued_at = $1
+     WHERE campaign_id = $2 AND tenant_id = $3 AND eligible = true AND delivery_status = 'pending'
+     RETURNING id, contact_id`,
+    [now.toISOString(), campaignId, tenantId],
   );
-  for (const r of eligible.rows) {
-    await db.query(
-      `UPDATE campaign_recipients SET delivery_status = 'queued', queued_at = $1 WHERE id = $2 AND tenant_id = $3`,
-      [now.toISOString(), r.id, tenantId],
-    );
+  if (eligible.rows.length > 0) {
     await db.query(
       `INSERT INTO notification_events
         (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
-       VALUES ($1, $2, $3, $4, $5, 'queued', $6)`,
-      [randomUUID(), tenantId, campaignId, r.id, r.contact_id, now.toISOString()],
+       SELECT unnest($1::uuid[]), $2, $3, unnest($4::uuid[]), unnest($5::uuid[]), 'queued', $6`,
+      [
+        eligible.rows.map(() => randomUUID()),
+        tenantId, campaignId,
+        eligible.rows.map((r) => r.id),
+        eligible.rows.map((r) => r.contact_id),
+        now.toISOString(),
+      ],
     );
   }
   return { kind: 'ok' as const, queued: eligible.rows.length, snapshot_hash: campaign.snapshot_hash };
@@ -390,12 +401,18 @@ export async function cancelCampaign(db: Database, tenantId: string, campaignId:
      RETURNING id, contact_id`,
     [campaignId, tenantId],
   );
-  for (const r of cancelled.rows) {
+  if (cancelled.rows.length > 0) {
     await db.query(
       `INSERT INTO notification_events
         (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
-       VALUES ($1, $2, $3, $4, $5, 'cancelled', $6)`,
-      [randomUUID(), tenantId, campaignId, r.id, r.contact_id, now.toISOString()],
+       SELECT unnest($1::uuid[]), $2, $3, unnest($4::uuid[]), unnest($5::uuid[]), 'cancelled', $6`,
+      [
+        cancelled.rows.map(() => randomUUID()),
+        tenantId, campaignId,
+        cancelled.rows.map((r) => r.id),
+        cancelled.rows.map((r) => r.contact_id),
+        now.toISOString(),
+      ],
     );
   }
   return { kind: 'ok' as const, cancelled: cancelled.rows.length };

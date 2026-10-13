@@ -134,17 +134,31 @@ export async function getDispatchJobs(
     [claimedIds, tenantId],
   );
 
-  const jobs = [];
-  for (const row of result.rows) {
-    const assets = await db.query<{ id: string; asset_type: string; url: string; mime_type: string | null }>(
-      `SELECT id, asset_type, url, mime_type FROM campaign_assets
-       WHERE campaign_id = $1 AND tenant_id = $2 ORDER BY created_at`,
-      [row.campaign_id, tenantId],
-    );
+  const campaignIds = [...new Set(result.rows.map((r) => r.campaign_id))];
+  const allAssets = campaignIds.length > 0
+    ? await db.query<{ campaign_id: string; id: string; asset_type: string; url: string; mime_type: string | null }>(
+        `SELECT campaign_id, id, asset_type, url, mime_type FROM campaign_assets
+         WHERE campaign_id = ANY($1) AND tenant_id = $2 ORDER BY created_at`,
+        [campaignIds, tenantId],
+      )
+    : { rows: [] };
+  const assetsByCampaign = new Map<string, typeof allAssets.rows>();
+  for (const a of allAssets.rows) {
+    const list = assetsByCampaign.get(a.campaign_id) ?? [];
+    list.push(a);
+    assetsByCampaign.set(a.campaign_id, list);
+  }
+
+  return result.rows.map((row) => {
     const ref = row.campaign_id.slice(0, 8);
     const msgText = injectRef(replaceVars(row.message_text, tenantVars), ref);
     const linkUrl = row.link_url ? injectRef(replaceVars(row.link_url, tenantVars), ref) : null;
-    jobs.push({
+    const assets = (assetsByCampaign.get(row.campaign_id) ?? []).map((a) => ({
+      ...a,
+      url: toAbsoluteUrl(a.url),
+      mime_type: inferMime(a.url, a.mime_type),
+    }));
+    return {
       recipient_id: row.recipient_id,
       campaign_id: row.campaign_id,
       contact_id: row.contact_id,
@@ -152,11 +166,10 @@ export async function getDispatchJobs(
       full_name: row.full_name,
       message_text: msgText,
       link_url: linkUrl,
-      assets: assets.rows.map(a => ({ ...a, url: toAbsoluteUrl(a.url), mime_type: inferMime(a.url, a.mime_type) })),
+      assets,
       queued_at: row.queued_at,
-    });
-  }
-  return jobs;
+    };
+  });
 }
 
 const STATUS_TRANSITIONS: Record<string, string[]> = {
