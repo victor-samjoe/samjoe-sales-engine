@@ -42,6 +42,8 @@ interface Env {
   JWT_EXPIRES_IN?: string;
   SAMJOE_TECH_SERVICE_KEY?: string;
   SERVER_PUBLIC_URL?: string;
+  SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
   ASSETS: { fetch(req: Request): Promise<Response> };
 }
 
@@ -340,6 +342,51 @@ app.patch('/api/internal/tenants/:id', requireServiceKey, async (c) => {
 // ---------------------------------------------------------------------------
 // Contacts
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Media upload → Supabase Storage
+// ---------------------------------------------------------------------------
+
+app.post('/api/v1/uploads/media', requireAuth, async (c) => {
+  const supabaseUrl = c.env.SUPABASE_URL ?? 'https://ikboutpjeayqnamuhmqo.supabase.co';
+  const serviceKey = c.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceKey) {
+    return c.json({ error: { code: 'NOT_CONFIGURED', message: 'Storage não configurado' } }, 503);
+  }
+  const contentType = c.req.header('content-type') ?? '';
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Envie como multipart/form-data' } }, 400);
+  }
+  const formData = await c.req.formData().catch(() => null);
+  const file = formData?.get('file');
+  if (!file || typeof file === 'string') {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Campo "file" ausente' } }, 400);
+  }
+  const blob = file as File;
+  const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime'];
+  if (!ALLOWED.includes(blob.type)) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Tipo de arquivo não suportado' } }, 400);
+  }
+  const ext = blob.type.split('/')[1]?.replace('quicktime', 'mov') ?? 'bin';
+  const key = `${c.get('user').tenantId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const assetType = blob.type.startsWith('video/') ? 'video' : 'image';
+  const upload = await fetch(`${supabaseUrl}/storage/v1/object/media/${key}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${serviceKey}`,
+      'Content-Type': blob.type,
+      'x-upsert': 'false',
+    },
+    body: blob,
+  });
+  if (!upload.ok) {
+    const err = await upload.text();
+    console.error('Supabase Storage upload error:', err);
+    return c.json({ error: { code: 'UPLOAD_FAILED', message: 'Falha no upload' } }, 502);
+  }
+  const publicUrl = `${supabaseUrl}/storage/v1/object/public/media/${key}`;
+  return c.json({ data: { url: publicUrl, assetType, key } });
+});
 
 app.get('/api/v1/contacts', requireAuth, async (c) => {
   const db = c.get('db');

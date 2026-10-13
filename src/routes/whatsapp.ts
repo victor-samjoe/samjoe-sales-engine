@@ -9,6 +9,7 @@ interface WaConfig {
   evolutionUrl: string;
   instanceName: string;
   apiKey: string;
+  automationEnabled: boolean;
 }
 
 async function getTenantWaConfig(db: Database, tenantId: string): Promise<WaConfig> {
@@ -24,6 +25,7 @@ async function getTenantWaConfig(db: Database, tenantId: string): Promise<WaConf
     evolutionUrl: (settings.wa_evolution_url as string | undefined) ?? WA_DEFAULT_URL,
     instanceName: (settings.wa_instance_name as string | undefined) ?? WA_DEFAULT_INSTANCE,
     apiKey: (settings.wa_api_key as string | undefined) ?? '',
+    automationEnabled: (settings.wa_automation_enabled as boolean | undefined) ?? false,
   };
 }
 
@@ -41,6 +43,7 @@ async function saveTenantWaConfig(db: Database, tenantId: string, patch: Partial
   if (patch.evolutionUrl !== undefined) settings.wa_evolution_url = patch.evolutionUrl;
   if (patch.instanceName !== undefined) settings.wa_instance_name = patch.instanceName;
   if (patch.apiKey !== undefined) settings.wa_api_key = patch.apiKey;
+  if (patch.automationEnabled !== undefined) settings.wa_automation_enabled = patch.automationEnabled;
 
   await db.query(
     `UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`,
@@ -58,6 +61,7 @@ const WaConfigBody = Type.Object({
   evolutionUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
   instanceName: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
   apiKey: Type.Optional(Type.String({ maxLength: 512 })),
+  automationEnabled: Type.Optional(Type.Boolean()),
 });
 
 export async function whatsappRoutes(app: FastifyInstance, db: Database) {
@@ -68,6 +72,7 @@ export async function whatsappRoutes(app: FastifyInstance, db: Database) {
         evolutionUrl: cfg.evolutionUrl,
         instanceName: cfg.instanceName,
         hasApiKey: !!cfg.apiKey,
+        automationEnabled: cfg.automationEnabled,
       },
     };
   });

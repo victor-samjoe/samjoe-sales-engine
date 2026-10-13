@@ -123,34 +123,47 @@
     const badge = $('#waBadge');
     const disconnectBtn = $('#waDisconnectBtn');
     const connectBtn = $('#waConfigBtn');
+    const automationRow = $('#waAutomationRow');
+    const automationToggle = $('#waAutomationToggle');
     if (!dot) return;
     try {
       const result = await api('/api/v1/integrations/whatsapp/status');
       const waState = result.data?.state;
-      if (waState === 'open') {
+      const isConnected = waState === 'open';
+      if (isConnected) {
         dot.className = 'health-dot ok';
         if (text) text.textContent = 'Conectado';
         if (badge) { badge.textContent = 'Conectado'; badge.className = 'status-badge success'; }
         if (disconnectBtn) disconnectBtn.classList.remove('is-hidden');
         if (connectBtn) connectBtn.textContent = 'Reconectar';
+        if (automationRow) automationRow.classList.remove('is-hidden');
+        if (automationToggle) {
+          try {
+            const cfg = await api('/api/v1/integrations/whatsapp/config');
+            automationToggle.checked = cfg.data?.automationEnabled ?? false;
+          } catch { /* ignore */ }
+        }
       } else if (waState === 'connecting') {
         dot.className = 'health-dot warn';
         if (text) text.textContent = 'Conectando…';
         if (badge) { badge.textContent = 'Conectando'; badge.className = 'status-badge accent'; }
         if (disconnectBtn) disconnectBtn.classList.add('is-hidden');
         if (connectBtn) connectBtn.textContent = 'Conectar';
+        if (automationRow) automationRow.classList.add('is-hidden');
       } else {
         dot.className = 'health-dot fail';
         if (text) text.textContent = waState === 'offline' ? 'API offline' : 'Desconectado';
         if (badge) { badge.textContent = waState === 'offline' ? 'Offline' : 'Desconectado'; badge.className = 'status-badge danger'; }
         if (disconnectBtn) disconnectBtn.classList.add('is-hidden');
         if (connectBtn) connectBtn.textContent = 'Conectar';
+        if (automationRow) automationRow.classList.add('is-hidden');
       }
     } catch {
       dot.className = 'health-dot fail';
       if (text) text.textContent = 'Indisponível';
       if (badge) { badge.textContent = 'Offline'; badge.className = 'status-badge danger'; }
       if (disconnectBtn) disconnectBtn.classList.add('is-hidden');
+      if (automationRow) automationRow.classList.add('is-hidden');
     }
   }
 
@@ -958,7 +971,7 @@
   let waStatusPollTimer = null;
 
   function waShowStep(step) {
-    ['waStepLoading', 'waStepQr', 'waStepConnected', 'waStepError'].forEach((id) => {
+    ['waStepConfig', 'waStepLoading', 'waStepQr', 'waStepConnected', 'waStepError'].forEach((id) => {
       const el = $('#' + id);
       if (el) el.classList.toggle('is-hidden', id !== step);
     });
@@ -967,18 +980,48 @@
   async function openWaModal() {
     $('#waModal').classList.add('is-active');
     $('#waModalBackdrop').classList.remove('is-hidden');
-    // Load saved advanced config
+    let evolutionUrl = '';
+    let instanceName = 'samjoe';
     try {
       const cfg = await api('/api/v1/integrations/whatsapp/config');
       if (cfg.data) {
-        $('#waApiUrlInput').value = cfg.data.evolutionUrl || 'http://localhost:8081';
-        $('#waInstanceInput').value = cfg.data.instanceName || 'samjoe';
-        $('#waApiUrlInputErr').value = cfg.data.evolutionUrl || 'http://localhost:8081';
-        $('#waInstanceInputErr').value = cfg.data.instanceName || 'samjoe';
+        evolutionUrl = cfg.data.evolutionUrl || '';
+        instanceName = cfg.data.instanceName || 'samjoe';
       }
     } catch { /* ignore */ }
-    waShowStep('waStepLoading');
-    await waLoadQr();
+    if ($('#waApiUrlInput')) $('#waApiUrlInput').value = evolutionUrl;
+    if ($('#waInstanceInput')) $('#waInstanceInput').value = instanceName;
+    if ($('#waApiUrlInputErr')) $('#waApiUrlInputErr').value = evolutionUrl;
+    if ($('#waInstanceInputErr')) $('#waInstanceInputErr').value = instanceName;
+    if ($('#waSetupUrlInput')) $('#waSetupUrlInput').value = evolutionUrl;
+    if ($('#waSetupInstanceInput')) $('#waSetupInstanceInput').value = instanceName;
+    const needsSetup = !evolutionUrl || evolutionUrl === 'http://localhost:8081';
+    if (needsSetup) {
+      waShowStep('waStepConfig');
+    } else {
+      waShowStep('waStepLoading');
+      await waLoadQr();
+    }
+  }
+
+  async function saveWaSetupConfig() {
+    const url = $('#waSetupUrlInput')?.value.trim() || '';
+    const instance = $('#waSetupInstanceInput')?.value.trim() || 'samjoe';
+    if (!url) { toast('Informe a URL da Evolution API.', 'error'); return; }
+    try {
+      await api('/api/v1/integrations/whatsapp/config', {
+        method: 'PUT',
+        body: JSON.stringify({ evolutionUrl: url, instanceName: instance }),
+      });
+      if ($('#waApiUrlInput')) $('#waApiUrlInput').value = url;
+      if ($('#waInstanceInput')) $('#waInstanceInput').value = instance;
+      if ($('#waApiUrlInputErr')) $('#waApiUrlInputErr').value = url;
+      if ($('#waInstanceInputErr')) $('#waInstanceInputErr').value = instance;
+      waShowStep('waStepLoading');
+      await waLoadQr();
+    } catch (err) {
+      toast('Erro ao salvar: ' + err.message, 'error');
+    }
   }
 
   function closeWaModal() {
@@ -1549,9 +1592,22 @@
     $('#waModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeWaModal(); });
     $('#saveWaConfigBtn').addEventListener('click', saveWaConfig);
     $('#waTryAgainBtn').addEventListener('click', saveWaConfigFromError);
+    $('#waSetupSaveBtn').addEventListener('click', saveWaSetupConfig);
     $('#waAdvancedToggle').addEventListener('click', () => {
       const adv = $('#waAdvancedConfig');
       adv.classList.toggle('is-hidden');
+    });
+    $('#waAutomationToggle').addEventListener('change', async (e) => {
+      try {
+        await api('/api/v1/integrations/whatsapp/config', {
+          method: 'PUT',
+          body: JSON.stringify({ automationEnabled: e.target.checked }),
+        });
+        toast(e.target.checked ? 'Automação n8n ativada.' : 'Automação n8n desativada.');
+      } catch (err) {
+        toast('Erro ao salvar: ' + err.message, 'error');
+        e.target.checked = !e.target.checked;
+      }
     });
     $('#n8nConfigBtn').addEventListener('click', openN8nModal);
     $$('[data-close-n8n]').forEach((el) => el.addEventListener('click', closeN8nModal));
