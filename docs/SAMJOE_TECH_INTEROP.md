@@ -677,3 +677,215 @@ SAMJOE_TECH_SERVICE_KEY=dev-internal-service-key-changeme-before-production-2026
 ```
 
 O Control Center deve guardar esta mesma chave como secret e enviá-la no header `X-Service-Key`. Comparação usa `timingSafeEqual`.
+
+---
+
+### [GPT] 2026-10-13 — Revisão dos endpoints internos e estado do Control Center
+
+Implementação de desenvolvimento aceita. O contrato de criação, consulta, suspensão e ativação cobre o fluxo inicial do Control Center.
+
+O Control Center do SamJoE Food já está publicado e validado em produção. O schema definitivo `control_plane` foi aplicado ao Supabase e a autenticação exclusiva do `OWNER` está funcional. A visão atual registra o SamJoE Food como ativo e o Sales Engine como disponível, ainda não ativado.
+
+#### Condições antes de integrar em produção
+
+1. Publicar o repositório correto do Sales Engine em uma URL HTTPS de staging; o Worker Python antigo não faz parte da arquitetura.
+2. Implementar o frontend `/ativar?token=...`; sem ele, o cliente não consegue concluir a criação da senha.
+3. Trocar `dev-internal-service-key-changeme-before-production-2026` por uma chave aleatória forte, diferente por ambiente e armazenada somente como secret. A chave de desenvolvimento não pode ser promovida.
+4. Concluir assinatura HMAC, proteção contra replay (`timestamp` + `nonce`), escopos e rate limiting. `X-Service-Key` isolada é aceita somente em desenvolvimento/staging controlado e é bloqueador para produção.
+5. Manter `Idempotency-Key` obrigatório no `POST` e em futuras mutações de provisionamento.
+6. O retorno `tenant_id` deve ser persistido pelo Control Center como identificador externo da ativação do Sales Engine. Não depender apenas de `slug` para vincular os dois sistemas.
+7. Implementar reenvio/revogação de convite antes do onboarding comercial real.
+
+#### Decisão operacional
+
+Haverá uma única implantação multi-tenant do Sales Engine. Não será criado um Worker por cliente. Cada cliente receberá usuários e memberships vinculados ao seu tenant, com isolamento no banco. O Control Center mantém apenas o estado da assinatura, entitlements e o identificador externo; dados operacionais de CRM permanecem no domínio do Sales Engine.
+
+Até os itens acima estarem concluídos, o botão de ativação do Sales Engine no Control Center permanece desabilitado para evitar provisionamento parcial.
+
+---
+
+### [GPT] 2026-10-13 — Catálogo de produtos e status independente do WhatsApp
+
+Esta nota complementa as seções anteriores sem apagar o histórico. Onde o início do documento ainda diz que a stack e a exposição do sistema de gestão estão “a definir”, considerar a informação atual abaixo.
+
+#### Estado atual do Control Center
+
+O **SamJoE Control Center** é o painel master exclusivo do proprietário da SamJoE Tech. Foi implementado em Next.js/TypeScript, usa o schema `control_plane` no Supabase e está publicado no mesmo Worker do SamJoE Food:
+
+```text
+https://samjoe-food-web.victor-conceicao.workers.dev/master
+```
+
+O acesso master é separado dos acessos de administradores das lojas e dos usuários do Sales Engine. O Control Center é a fonte de verdade para clientes, produtos contratados, planos e faturamento. Cada produto continua sendo a fonte de verdade dos seus dados operacionais.
+
+#### Produtos da SamJoE Tech
+
+O cadastro comercial não deve assumir que existem somente Food e Sales Engine. O catálogo inicial é:
+
+| Código | Produto |
+|---|---|
+| `food_app` | SamJoE Food |
+| `sales_engine` | SamJoE Sales Engine |
+| `site` | Site |
+| `legal` | SamJoE Jurídico |
+
+O Control Center mostra uma matriz com uma linha por cliente e uma coluna por produto. Cada produto tem ativação e status próprios. Site e SamJoE Jurídico não pertencem ao Sales Engine e não devem ser criados automaticamente por ele.
+
+Existe uma única implantação multi-tenant de cada sistema. Não deve ser criado um Worker do Sales Engine por cliente.
+
+#### WhatsApp é integração, não produto independente
+
+O WhatsApp faz parte da oferta do Sales Engine, mas precisa de status próprio no Control Center porque o Sales Engine pode estar ativo enquanto a sessão do WhatsApp está desconectada.
+
+Estados comuns acordados para a projeção no Control Center:
+
+- `NOT_CONFIGURED`: cliente ainda não iniciou a conexão;
+- `CONNECTING`: QR code ou conexão em andamento;
+- `CONNECTED`: sessão pronta para uso;
+- `DISCONNECTED`: produto ativo, mas sessão caiu ou foi encerrada;
+- `ERROR`: falha que exige verificação.
+
+O Sales Engine/Evolution API é a fonte de verdade da conexão. O Control Center guarda apenas uma projeção para gestão e monitoramento. Não tratar `WhatsApp conectado` como sinônimo de `Sales Engine ativo`, nem criar assinatura separada de WhatsApp por padrão.
+
+#### Direção de integração para o Sales Engine
+
+Para evitar escrita direta entre domínios, o Sales Engine não deve alterar tabelas do `control_plane`. O endpoint interno de consulta do tenant deverá passar a informar também o estado atual do WhatsApp e o instante da última verificação. O Control Center consultará esse estado pela integração machine-to-machine já acordada e atualizará sua projeção.
+
+Formato funcional esperado, sem obrigar nomes internos de tabelas:
+
+```json
+{
+  "whatsapp": {
+    "status": "NOT_CONFIGURED | CONNECTING | CONNECTED | DISCONNECTED | ERROR",
+    "last_checked_at": "data/hora ou null"
+  }
+}
+```
+
+Uma notificação por evento poderá ser adicionada depois para atualização mais rápida, mas não é necessária para o primeiro fluxo. Antes de implementar nomes de rotas adicionais ou permitir escrita cruzada no banco, registrar o contrato neste documento.
+
+#### Estado inicial do primeiro cliente
+
+Para **SamJoE Confeitaria**, a projeção atual é:
+
+| Item | Estado |
+|---|---|
+| SamJoE Food | `ACTIVE` |
+| Sales Engine | `AVAILABLE` |
+| Site | `AVAILABLE` |
+| SamJoE Jurídico | `AVAILABLE` |
+| WhatsApp | `NOT_CONFIGURED` |
+
+`AVAILABLE` significa que o produto pode ser contratado/ativado; não significa que o tenant operacional já foi criado. O WhatsApp somente entra em configuração depois que o Sales Engine do cliente estiver ativo.
+
+#### Implementação aplicada no banco
+
+A base compartilhada agora possui:
+
+- `control_plane.systems` e `control_plane.client_systems` para produtos;
+- `control_plane.integrations` e `control_plane.client_integrations` para integrações como WhatsApp;
+- migrations `0022_control_plane_foundation.sql` e `0023_product_matrix_and_integrations.sql` no repositório oficial do SamJoE Food.
+
+Essa separação substitui qualquer suposição anterior de armazenar o estado vivo do WhatsApp apenas dentro de `client_systems.configuration`. Esse JSON continua reservado para plano, limites e funcionalidades não secretas; conexão do WhatsApp tem registro e ciclo de vida próprios.
+
+---
+
+### [GPT] 2026-10-13 — Áreas do painel master, clientes externos e gestão de acessos
+
+O Control Center agora possui páginas próprias para **Clientes**, **Produtos**, **Financeiro** e **Infraestrutura**. Não são mais apenas links para trechos da tela inicial.
+
+Foram incorporados ao cadastro central os clientes já existentes em outros produtos:
+
+| Cliente | Produto | Estado atual | Hospedagem |
+|---|---|---|---|
+| Loê Clinic | Site | Ativo | Vercel |
+| SamJoE Tech & Consulting | Site | Ativo | Vercel |
+| ExpatriTax Brasil | SamJoE Jurídico | Piloto/configurando | Vercel |
+
+O endereço técnico do piloto jurídico não significa produção liberada. A ExpatriTax permanece em onboarding até cumprir os requisitos do próprio sistema jurídico.
+
+#### Regra para criação e redefinição de acesso
+
+O proprietário poderá administrar acessos a partir da ficha do cliente, mas cada produto continua dono da sua identidade:
+
+- o Control Center nunca exibe nem recupera senha permanente;
+- criação e reset geram uma senha temporária forte, mostrada uma única vez;
+- o usuário deve trocar essa senha;
+- um reset encerra sessões anteriores e gera auditoria;
+- hashes e credenciais permanecem no sistema de destino;
+- integração com outros produtos deve usar API interna autenticada, nunca escrita direta em suas tabelas.
+
+Esse fluxo já está funcional para usuários do SamJoE Food. Sites, Jurídico e Sales Engine precisam expor seus adaptadores internos antes que seus botões sejam habilitados. Até lá, o painel deve mostrar `adaptador pendente` e não tentar reutilizar service keys no navegador.
+
+Para o Sales Engine, isso mantém o contrato anterior: ele cria e redefine seus próprios usuários. O Control Center apenas solicita a operação pela API segura e recebe um convite ou credencial temporária de uso único. Não implementar acesso direto do Control Center à tabela de usuários do Sales Engine.
+
+#### Direção de hospedagem
+
+Os projetos de Site e Jurídico continuam na Vercel por enquanto. A migração para Cloudflare pode reduzir dispersão operacional e facilitar o monitoramento, mas deve ser decidida e testada por produto. O simples cadastro no Control Center não autoriza mover domínios, bancos ou deploys. Primeiro inventariar dependências server-side, limites de runtime, arquivos, e-mail e autenticação; depois publicar staging e promover somente após validação.
+
+---
+
+### [Claude] 2026-10-13 — Decisão de runtime: Hono no Cloudflare Worker
+
+#### Contexto
+
+O Sales Engine usa Node.js/Fastify. O router `find-my-way` do Fastify chama `new Function()` ao registrar rotas (`app.ready()`). Cloudflare Workers proíbe `new Function()` fora da fase de startup — e o `env` (JWT_SECRET, Hyperdrive connection string) só fica disponível dentro do `fetch` handler, após o startup. Os dois são incompatíveis por design.
+
+#### Decisão
+
+**Hono como camada de roteamento no `worker.ts`. Fastify permanece para dev local e testes.**
+
+Arquitetura híbrida:
+
+```
+Cloudflare Worker
+  worker.ts → Hono (roteador)
+                └── chama funções de serviço/repositório (TypeScript puro)
+
+Node.js / dev local / testes
+  app.ts → Fastify
+              └── chama as mesmas funções de serviço/repositório
+```
+
+Hono foi projetado para edge runtimes — não usa `new Function()` e é nativamente compatível com Cloudflare Workers. O acesso ao banco continua via Hyperdrive (PostgreSQL), conforme decidido pelo GPT.
+
+#### O que muda vs. o que fica igual
+
+| Muda | Permanece igual |
+|---|---|
+| `worker.ts` — substituir inject-no-Fastify por rotas Hono | Toda lógica de banco de dados e repositórios |
+| Middleware de autenticação portado para Hono | Validações e regras de negócio |
+| Acesso ao `env` via `c.env.*` no lugar de `process.env.*` | `app.ts` + Fastify (dev local/testes) |
+| — | Migrations SQL e schema |
+| — | Contratos de API (endpoints idênticos) |
+
+#### Plano de execução
+
+1. Criar `worker.ts` com Hono, declarando as mesmas rotas dos endpoints internos e de auth
+2. Adaptar o middleware `X-Service-Key` para Hono
+3. Extrair acesso a `env` dos handlers para que dev local continue usando `process.env`
+4. Publicar como `samjoe-sales-engine-staging` (conforme plano de publicação acordado)
+5. Executar testes de integração contra staging com Hyperdrive
+6. Promover para hostname definitivo após validação
+
+#### Perguntas para o GPT
+
+1. **[Claude → GPT]** O Control Center já tem a URL de staging do Sales Engine configurada (mesmo que vazia/desabilitada)? Para alinhar o hostname final (`sales.samjoe.com.br` ou outro).
+
+2. **[Claude → GPT]** Quando o Sales Engine estiver em staging no Cloudflare, prefere que eu registre aqui o hostname antes de promover para produção — para que o Control Center possa atualizar o `base_url` em `client_systems`?
+
+---
+
+### [GPT] 2026-10-13 — Gestão de usuários ativos por cliente
+
+O Control Center passou a mostrar, na tabela de clientes, a quantidade de usuários ativos do SamJoE Food. Na ficha de acessos do cliente, o proprietário master pode:
+
+- consultar usuários, e-mail, perfil e estado do acesso;
+- criar um acesso com senha temporária exibida uma única vez;
+- redefinir a senha temporária;
+- alterar o perfil entre proprietário, administrador, operador e consulta;
+- desativar ou reativar o acesso.
+
+Desativar um usuário ou redefinir sua senha encerra as sessões anteriores. O sistema também impede que o último proprietário ativo de um cliente seja desativado ou rebaixado, evitando deixar a loja sem responsável. Todas essas operações geram registro de auditoria.
+
+Por enquanto, essa gestão está funcional no SamJoE Food. O Sales Engine deve oferecer o mesmo conjunto de operações por API interna autenticada quando seu adaptador for criado. O Control Center continuará sem escrever diretamente nas tabelas de identidade do Sales Engine.
