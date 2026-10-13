@@ -433,31 +433,55 @@ export async function updateCampaign(db: Database, tenantId: string, campaignId:
   const setParts: string[] = [];
   const p = (val: unknown) => { params.push(val); return `$${params.length}`; };
 
-  if (input.name !== undefined) setParts.push(`name = ${p(input.name.trim())}`);
+  if (input.name != null) setParts.push(`name = ${p(input.name.trim())}`);
   if (input.objective !== undefined) setParts.push(`objective = ${p(input.objective?.trim() ?? null)}`);
-  if (input.messageText !== undefined) setParts.push(`message_text = ${p(input.messageText.trim())}`);
+  if (input.messageText != null) setParts.push(`message_text = ${p(input.messageText.trim())}`);
   if (input.linkUrl !== undefined) setParts.push(`link_url = ${p(input.linkUrl?.trim() ?? null)}`);
-  if (input.dispatchMode !== undefined) setParts.push(`dispatch_mode = ${p(input.dispatchMode)}`);
-  if (input.minIntervalHours !== undefined) setParts.push(`min_interval_hours = ${p(input.minIntervalHours)}`);
-  if (input.maxNotificationsPer30d !== undefined) setParts.push(`max_notifications_per_30d = ${p(input.maxNotificationsPer30d)}`);
-  if (input.includeConverted !== undefined) setParts.push(`include_converted = ${p(input.includeConverted)}`);
-  if (input.conversionWindowDays !== undefined) setParts.push(`conversion_window_days = ${p(input.conversionWindowDays)}`);
-  if (input.audienceRules !== undefined) setParts.push(`audience_rules_json = ${p(JSON.stringify(input.audienceRules))}::jsonb`);
+  if (input.dispatchMode != null) setParts.push(`dispatch_mode = ${p(input.dispatchMode)}`);
+  if (input.minIntervalHours != null && Number.isFinite(input.minIntervalHours)) setParts.push(`min_interval_hours = ${p(input.minIntervalHours)}`);
+  if (input.maxNotificationsPer30d != null && Number.isFinite(input.maxNotificationsPer30d)) setParts.push(`max_notifications_per_30d = ${p(input.maxNotificationsPer30d)}`);
+  if (input.includeConverted != null) setParts.push(`include_converted = ${p(input.includeConverted)}`);
+  if (input.conversionWindowDays != null && Number.isFinite(input.conversionWindowDays)) setParts.push(`conversion_window_days = ${p(input.conversionWindowDays)}`);
+  if (input.audienceRules != null) setParts.push(`audience_rules_json = ${p(JSON.stringify(input.audienceRules))}::jsonb`);
 
-  if (setParts.length === 0) {
+  const hasAssetUpdate = input.assets !== undefined;
+  if (setParts.length === 0 && !hasAssetUpdate) {
     const row = await getCampaign(db, tenantId, campaignId);
     return row ? { locked: false as const, campaign: row } : null;
   }
 
-  setParts.push("status = 'draft'", 'snapshot_hash = NULL', 'snapshot_created_at = NULL', 'updated_at = now()');
-  const result = await db.query(
-    `UPDATE campaigns SET ${setParts.join(', ')} WHERE id = ${p(campaignId)} AND tenant_id = ${p(tenantId)}
-     RETURNING id, name, objective, message_text, link_url, status, audience_rules_json,
-               min_interval_hours, max_notifications_per_30d, include_converted,
-               conversion_window_days, snapshot_hash, snapshot_created_at, created_at, updated_at`,
-    params,
-  );
-  return result.rows[0] ? { locked: false as const, campaign: result.rows[0] } : null;
+  if (setParts.length > 0) {
+    setParts.push("status = 'draft'", 'snapshot_hash = NULL', 'snapshot_created_at = NULL', 'updated_at = now()');
+    await db.query(
+      `UPDATE campaigns SET ${setParts.join(', ')} WHERE id = ${p(campaignId)} AND tenant_id = ${p(tenantId)}`,
+      params,
+    );
+  } else {
+    await db.query(
+      `UPDATE campaigns SET status = 'draft', snapshot_hash = NULL,
+              snapshot_created_at = NULL, updated_at = now()
+        WHERE id = $1 AND tenant_id = $2`,
+      [campaignId, tenantId],
+    );
+  }
+
+  if (hasAssetUpdate) {
+    await db.query(
+      'DELETE FROM campaign_assets WHERE campaign_id = $1 AND tenant_id = $2',
+      [campaignId, tenantId],
+    );
+    for (const asset of input.assets ?? []) {
+      await db.query(
+        `INSERT INTO campaign_assets
+          (id, tenant_id, campaign_id, asset_type, url, mime_type, file_name, size_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [randomUUID(), tenantId, campaignId, asset.type, asset.url, asset.mimeType ?? null, asset.fileName ?? null, asset.sizeBytes ?? null],
+      );
+    }
+  }
+
+  const campaign = await getCampaign(db, tenantId, campaignId);
+  return campaign ? { locked: false as const, campaign } : null;
 }
 
 export async function getCampaignPreflight(db: Database, tenantId: string, campaignId: string) {
