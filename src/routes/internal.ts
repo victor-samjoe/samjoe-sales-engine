@@ -59,7 +59,7 @@ export async function internalRoutes(app: FastifyInstance, db: Database, config:
 
     if (typeof idempotencyKey === 'string') {
       const cached = await db.query<{ response_json: unknown }>(
-        `SELECT response_json FROM idempotency_keys
+        `SELECT response_json FROM se_idempotency_keys
          WHERE key = $1 AND endpoint = '/api/internal/tenants'
            AND created_at > now() - interval '24 hours'`,
         [idempotencyKey],
@@ -114,7 +114,7 @@ export async function internalRoutes(app: FastifyInstance, db: Database, config:
 
     if (typeof idempotencyKey === 'string') {
       await db.query(
-        `INSERT INTO idempotency_keys (key, endpoint, response_json)
+        `INSERT INTO se_idempotency_keys (key, endpoint, response_json)
          VALUES ($1, '/api/internal/tenants', $2::jsonb) ON CONFLICT DO NOTHING`,
         [idempotencyKey, JSON.stringify(response)],
       );

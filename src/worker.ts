@@ -247,7 +247,7 @@ app.post('/api/internal/tenants', requireServiceKey, async (c) => {
   const idempotencyKey = c.req.header('idempotency-key');
   if (idempotencyKey) {
     const cached = await db.query<{ response_json: unknown }>(
-      `SELECT response_json FROM idempotency_keys WHERE key = $1 AND endpoint = '/api/internal/tenants' AND created_at > now() - interval '24 hours'`,
+      `SELECT response_json FROM se_idempotency_keys WHERE key = $1 AND endpoint = '/api/internal/tenants' AND created_at > now() - interval '24 hours'`,
       [idempotencyKey],
     );
     if (cached.rows[0]) return c.json(cached.rows[0].response_json);
@@ -280,7 +280,7 @@ app.post('/api/internal/tenants', requireServiceKey, async (c) => {
   const publicUrl = (c.env.SERVER_PUBLIC_URL ?? 'https://sales.samjoe.com.br').replace(/\/$/, '');
   const response = { tenant_id: tenantId, user_id: userId, activation_url: `${publicUrl}/ativar?token=${rawToken}`, expires_at: expiresAt.toISOString() };
   if (idempotencyKey) {
-    await db.query(`INSERT INTO idempotency_keys (key, endpoint, response_json) VALUES ($1, '/api/internal/tenants', $2::jsonb) ON CONFLICT DO NOTHING`, [idempotencyKey, JSON.stringify(response)]);
+    await db.query(`INSERT INTO se_idempotency_keys (key, endpoint, response_json) VALUES ($1, '/api/internal/tenants', $2::jsonb) ON CONFLICT DO NOTHING`, [idempotencyKey, JSON.stringify(response)]);
   }
   return c.json(response, 201);
 });

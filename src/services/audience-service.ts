@@ -159,7 +159,7 @@ export async function queryAudienceContacts(
   }
   if (rules.purchasedProductIds?.length) {
     where.push(`EXISTS (
-      SELECT 1 FROM order_items oi
+      SELECT 1 FROM se_order_items oi
       JOIN campaign_conversions cc ON cc.id = oi.conversion_id AND cc.status = 'paid'
       WHERE oi.tenant_id = c.tenant_id AND oi.contact_id = c.id
         AND oi.product_id = ANY(${p(rules.purchasedProductIds)})
@@ -167,7 +167,7 @@ export async function queryAudienceContacts(
   }
   if (rules.purchasedCategories?.length) {
     where.push(`EXISTS (
-      SELECT 1 FROM order_items oi
+      SELECT 1 FROM se_order_items oi
       JOIN campaign_conversions cc ON cc.id = oi.conversion_id AND cc.status = 'paid'
       WHERE oi.tenant_id = c.tenant_id AND oi.contact_id = c.id
         AND oi.category = ANY(${p(rules.purchasedCategories)})

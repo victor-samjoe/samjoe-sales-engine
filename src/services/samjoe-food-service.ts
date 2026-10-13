@@ -253,13 +253,13 @@ export async function processSamJoeFoodEvent(db: Database, tenantId: string, eve
         let productId: string | null = null;
         if (item.external_product_id) {
           const pMatch = await db.query<{ id: string }>(
-            `SELECT id FROM products WHERE tenant_id = $1 AND sku = $2 LIMIT 1`,
+            `SELECT id FROM se_products WHERE tenant_id = $1 AND sku = $2 LIMIT 1`,
             [tenantId, item.external_product_id],
           );
           productId = pMatch.rows[0]?.id ?? null;
         }
         await db.query(
-          `INSERT INTO order_items
+          `INSERT INTO se_order_items
              (id, tenant_id, conversion_id, contact_id, product_id, external_product_id,
               product_name, category, quantity, unit_price_cents)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,

@@ -41,8 +41,8 @@ export async function getProductAnalytics(
        COUNT(DISTINCT oi.contact_id)     AS unique_buyers,
        SUM(oi.quantity)                  AS units_sold,
        SUM(oi.unit_price_cents * oi.quantity) AS revenue_cents
-     FROM order_items oi
-     LEFT JOIN products p ON p.id = oi.product_id AND p.tenant_id = oi.tenant_id
+     FROM se_order_items oi
+     LEFT JOIN se_products p ON p.id = oi.product_id AND p.tenant_id = oi.tenant_id
      JOIN campaign_conversions cc ON cc.id = oi.conversion_id AND cc.status = 'paid'
      WHERE oi.tenant_id = $1
        AND cc.occurred_at > now() - ($2 || ' days')::interval
