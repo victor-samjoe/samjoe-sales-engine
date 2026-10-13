@@ -66,12 +66,18 @@ type AppEnv = {
 
 let _pool: pg.Pool | null = null;
 function getPool(env: Env): pg.Pool {
-  if (!_pool) _pool = new pg.Pool({
-    connectionString: env.HYPERDRIVE.connectionString,
-    max: 5,
-    connectionTimeoutMillis: 8000,
-    idleTimeoutMillis: 20000,
-  });
+  if (!_pool) {
+    _pool = new pg.Pool({
+      connectionString: env.HYPERDRIVE.connectionString,
+      max: 10,
+      connectionTimeoutMillis: 20000,
+      idleTimeoutMillis: 30000,
+    });
+    _pool.on('error', (err) => {
+      console.error('Pool error, resetting:', err.message);
+      _pool = null;
+    });
+  }
   return _pool;
 }
 
@@ -948,7 +954,12 @@ app.all('*', async (c) => {
   if (c.req.path.startsWith('/api/')) {
     return c.json({ error: { code: 'NOT_FOUND', message: 'Rota não encontrada' } }, 404);
   }
-  return c.env.ASSETS.fetch(c.req.raw);
+  if (!c.env.ASSETS) return c.notFound();
+  try {
+    return await c.env.ASSETS.fetch(c.req.raw);
+  } catch {
+    return c.notFound();
+  }
 });
 
 export default app;
