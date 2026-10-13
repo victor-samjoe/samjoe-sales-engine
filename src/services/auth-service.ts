@@ -22,8 +22,8 @@ export async function authenticateUser(
        JOIN tenants t ON t.id = m.tenant_id
       WHERE lower(u.email) = lower($1)
         AND t.slug = $2
-        AND u.status = 'active'
-        AND t.status = 'active'
+        AND lower(u.status) = 'active'
+        AND lower(t.status) = 'active'
       LIMIT 1`,
     [email.trim(), tenantSlug.trim().toLowerCase()],
   );

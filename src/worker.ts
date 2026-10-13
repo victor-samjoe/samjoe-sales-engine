@@ -227,7 +227,7 @@ app.post('/api/v1/auth/activate', async (c) => {
       await client.query('ROLLBACK');
       return c.json({ error: { code: 'TOKEN_USED', message: 'Token já utilizado' } }, 410);
     }
-    await client.query(`UPDATE users SET password_hash = $1, status = 'active', updated_at = now() WHERE id = $2`, [passwordHash, row.user_id]);
+    await client.query(`UPDATE users SET password_hash = $1, status = 'ACTIVE', updated_at = now() WHERE id = $2`, [passwordHash, row.user_id]);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -252,24 +252,39 @@ app.post('/api/internal/tenants', requireServiceKey, async (c) => {
     );
     if (cached.rows[0]) return c.json(cached.rows[0].response_json);
   }
-  const body = await c.req.json().catch(() => null) as { slug?: string; name?: string; owner_email?: string; plan_code?: string; configuration?: Record<string, unknown> } | null;
+  const body = await c.req.json().catch(() => null) as { slug?: string; name?: string; owner_email?: string; owner_name?: string; plan_code?: string; configuration?: Record<string, unknown> } | null;
   if (!body?.slug || !body.name || !body.owner_email) {
     return c.json({ error: { code: 'VALIDATION_ERROR', message: 'slug, name e owner_email são obrigatórios' } }, 400);
   }
+  const displayName = body.owner_name?.trim() || body.owner_email.split('@')[0];
   const tenantId = randomUUID();
-  const userId = randomUUID();
   const tokenId = randomUUID();
   const rawToken = randomBytes(32).toString('hex');
   const tokenHash = createHash('sha256').update(rawToken).digest('hex');
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
   const pool = db as unknown as pg.Pool;
   const client = await pool.connect();
+  let resolvedUserId: string;
+  let needsActivation: boolean;
   try {
     await client.query('BEGIN');
-    await client.query(`INSERT INTO tenants (id, slug, name, status, settings_json) VALUES ($1, $2, $3, 'active', $4::jsonb)`, [tenantId, body.slug, body.name, JSON.stringify({ plan_code: body.plan_code ?? null, configuration: body.configuration ?? {} })]);
-    await client.query(`INSERT INTO users (id, email, password_hash, status) VALUES ($1, $2, '$INVITE_PENDING$', 'disabled')`, [userId, body.owner_email]);
-    await client.query(`INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, 'owner')`, [userId, tenantId]);
-    await client.query(`INSERT INTO invite_tokens (id, tenant_id, user_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, $4, 'owner_activation', $5)`, [tokenId, tenantId, userId, tokenHash, expiresAt]);
+    await client.query(`INSERT INTO tenants (id, slug, name, status, settings_json) VALUES ($1, $2, $3, 'ACTIVE', $4::jsonb)`, [tenantId, body.slug, body.name, JSON.stringify({ plan_code: body.plan_code ?? null, configuration: body.configuration ?? {} })]);
+    // Upsert user: create if not exists, reuse existing if already registered (e.g. shared FoodApp DB)
+    const newUserId = randomUUID();
+    const upsert = await client.query<{ id: string; status: string }>(
+      `INSERT INTO users (id, email, display_name, password_hash, status)
+       VALUES ($1, $2, $3, '$INVITE_PENDING$', 'DISABLED')
+       ON CONFLICT (lower(email)) DO UPDATE SET updated_at = now()
+       RETURNING id, status`,
+      [newUserId, body.owner_email, displayName],
+    );
+    resolvedUserId = upsert.rows[0]!.id;
+    const existingStatus = upsert.rows[0]!.status;
+    needsActivation = existingStatus === 'DISABLED' || existingStatus === 'disabled';
+    await client.query(`INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`, [resolvedUserId, tenantId]);
+    if (needsActivation) {
+      await client.query(`INSERT INTO invite_tokens (id, tenant_id, user_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, $4, 'owner_activation', $5)`, [tokenId, tenantId, resolvedUserId, tokenHash, expiresAt]);
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -278,7 +293,8 @@ app.post('/api/internal/tenants', requireServiceKey, async (c) => {
     client.release();
   }
   const publicUrl = (c.env.SERVER_PUBLIC_URL ?? 'https://sales.samjoe.com.br').replace(/\/$/, '');
-  const response = { tenant_id: tenantId, user_id: userId, activation_url: `${publicUrl}/ativar?token=${rawToken}`, expires_at: expiresAt.toISOString() };
+  const activationUrl = needsActivation ? `${publicUrl}/ativar?token=${rawToken}` : null;
+  const response = { tenant_id: tenantId, user_id: resolvedUserId, activation_url: activationUrl, expires_at: needsActivation ? expiresAt.toISOString() : null };
   if (idempotencyKey) {
     await db.query(`INSERT INTO se_idempotency_keys (key, endpoint, response_json) VALUES ($1, '/api/internal/tenants', $2::jsonb) ON CONFLICT DO NOTHING`, [idempotencyKey, JSON.stringify(response)]);
   }
@@ -303,12 +319,13 @@ app.patch('/api/internal/tenants/:id', requireServiceKey, async (c) => {
   const db = c.get('db');
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null) as { status?: string } | null;
-  if (!body?.status || !['active', 'suspended'].includes(body.status)) {
+  if (!body?.status || !['active', 'suspended', 'ACTIVE', 'SUSPENDED'].includes(body.status)) {
     return c.json({ error: { code: 'VALIDATION_ERROR', message: 'status deve ser "active" ou "suspended"' } }, 400);
   }
+  const normalizedStatus = body.status.toUpperCase() as 'ACTIVE' | 'SUSPENDED';
   const res = await db.query<{ id: string; slug: string; status: string }>(
     `UPDATE tenants SET status = $1, updated_at = now() WHERE id = $2 RETURNING id, slug, status`,
-    [body.status, id],
+    [normalizedStatus, id],
   );
   const updated = res.rows[0];
   if (!updated) return c.json({ error: { code: 'NOT_FOUND', message: 'Tenant not found' } }, 404);
@@ -607,10 +624,11 @@ async function getTenantWaConfig(db: Database, tenantId: string) {
     evolutionUrl: (settings.wa_evolution_url as string | undefined) ?? WA_DEFAULT_URL,
     instanceName: (settings.wa_instance_name as string | undefined) ?? WA_DEFAULT_INSTANCE,
     apiKey: (settings.wa_api_key as string | undefined) ?? '',
+    automationEnabled: (settings.wa_automation_enabled as boolean | undefined) ?? false,
   };
 }
 
-async function saveTenantWaConfig(db: Database, tenantId: string, patch: { evolutionUrl?: string; instanceName?: string; apiKey?: string }) {
+async function saveTenantWaConfig(db: Database, tenantId: string, patch: { evolutionUrl?: string; instanceName?: string; apiKey?: string; automationEnabled?: boolean }) {
   const current = await db.query<{ settings_json: Record<string, unknown> | string }>(`SELECT settings_json FROM tenants WHERE id = $1`, [tenantId]);
   const row = current.rows[0];
   if (!row) throw new Error('Tenant not found');
@@ -618,6 +636,7 @@ async function saveTenantWaConfig(db: Database, tenantId: string, patch: { evolu
   if (patch.evolutionUrl !== undefined) settings.wa_evolution_url = patch.evolutionUrl;
   if (patch.instanceName !== undefined) settings.wa_instance_name = patch.instanceName;
   if (patch.apiKey !== undefined) settings.wa_api_key = patch.apiKey;
+  if (patch.automationEnabled !== undefined) settings.wa_automation_enabled = patch.automationEnabled;
   await db.query(`UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`, [JSON.stringify(settings), tenantId]);
 }
 
@@ -629,11 +648,11 @@ function evoHeaders(apiKey: string): Record<string, string> {
 
 app.get('/api/v1/integrations/whatsapp/config', requireAuth, async (c) => {
   const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId);
-  return c.json({ data: { evolutionUrl: cfg.evolutionUrl, instanceName: cfg.instanceName, hasApiKey: !!cfg.apiKey } });
+  return c.json({ data: { evolutionUrl: cfg.evolutionUrl, instanceName: cfg.instanceName, hasApiKey: !!cfg.apiKey, automationEnabled: cfg.automationEnabled } });
 });
 
 app.put('/api/v1/integrations/whatsapp/config', requireAuth, async (c) => {
-  const body = await c.req.json() as { evolutionUrl?: string; instanceName?: string; apiKey?: string };
+  const body = await c.req.json() as { evolutionUrl?: string; instanceName?: string; apiKey?: string; automationEnabled?: boolean };
   await saveTenantWaConfig(c.get('db'), c.get('user').tenantId, body);
   return c.json({ data: { ok: true } });
 });
