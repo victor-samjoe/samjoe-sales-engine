@@ -72,6 +72,7 @@ function getPool(env: Env): pg.Pool {
       max: 10,
       connectionTimeoutMillis: 20000,
       idleTimeoutMillis: 30000,
+      query_timeout: 20000,
     });
     _pool.on('error', (err) => {
       console.error('Pool error, resetting:', err.message);
