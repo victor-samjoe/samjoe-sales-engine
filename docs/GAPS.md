@@ -1,4 +1,4 @@
-# Análise de lacunas
+﻿# Análise de lacunas
 
 ## Lacunas bloqueadoras do Sales Engine
 
@@ -29,7 +29,7 @@
 - JWT próprio temporário e memberships por tenant.
 - Testes com banco PostgreSQL efêmero ou compatível; nenhum dado real.
 - Manter endpoints de integração definidos, mas não ativar callbacks externos ainda.
-- Não modificar FoodApp legado, n8n, Evolution, planilhas ou sistema de custos.
+- Não modificar SamJoE Food legado, n8n, Evolution, planilhas ou sistema de custos.
 
 ## Pendências para checkpoints seguintes
 
@@ -39,5 +39,5 @@
 - Definir adaptador de custos e política de snapshots.
 - Criar frontend administrativo.
 - Definir HMAC, rotação de segredo e proteção contra replay.
-- Planejar migração gradual do pedido para o FoodApp definitivo.
+- Planejar migração gradual do pedido para o SamJoE Food definitivo.
 

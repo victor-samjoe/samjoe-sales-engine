@@ -1,4 +1,4 @@
-# SPEC — SamJoE Sales Engine
+﻿# SPEC — SamJoE Sales Engine
 
 **Versão:** 1.1.0  
 **Data de referência:** 10/10/2026  
@@ -132,11 +132,11 @@ flowchart TD
 ### 3.1 Stack recomendada (não obrigatória se infraestrutura existente divergir)
 
 - Backend: Node.js LTS, TypeScript em modo estrito, Fastify, validação por schemas Zod ou TypeBox e testes com Vitest.
-- Persistência: PostgreSQL desde o primeiro ambiente, migrations versionadas e valores monetários em centavos inteiros ou `numeric`/Decimal. O Sales Engine possui banco próprio e não acessa diretamente tabelas do FoodApp.
+- Persistência: PostgreSQL desde o primeiro ambiente, migrations versionadas e valores monetários em centavos inteiros ou `numeric`/Decimal. O Sales Engine possui banco próprio e não acessa diretamente tabelas do SamJoE Food.
 - Agendamentos: processo TypeScript executado por cron/serviço ou worker separado. Não depender de timer em processo HTTP efêmero. Usar fila transacional no PostgreSQL inicialmente; adicionar Redis somente quando uma necessidade medida justificar.
 - n8n: um workflow de envio e outro de retorno/status/entrada; sem regras de CRM nem cópia paralela do banco mestre.
 - WhatsApp: um `MessagingProvider` abstrato. Adaptador Evolution API para ambiente já em uso, **sujeito a avaliação de riscos**, e planejamento de migração para WhatsApp Business Platform oficial. Não contornar bloqueios, limites ou políticas.
-- Interface: Next.js + TypeScript, alinhado ao FoodApp, mantendo aplicação, deploy e identidade de produto independentes. Priorizar usabilidade e não compartilhar estado interno entre os produtos.
+- Interface: Next.js + TypeScript, alinhado ao SamJoE Food, mantendo aplicação, deploy e identidade de produto independentes. Priorizar usabilidade e não compartilhar estado interno entre os produtos.
 - Infra: backend em container próprio na VPS, publicado por Cloudflare Tunnel e proxy interno. Cloudflare Pages pode hospedar frontend estático, mas não substitui o processo Node.js da API.
 - Serviços especializados: Python é permitido para IA, previsão, otimização ou análise avançada, sempre atrás de contrato versionado; não é requisito do núcleo do CRM.
 - Fuso funcional: `America/Sao_Paulo`; armazenar instantes em UTC e converter na exibição/agendamento.
@@ -147,13 +147,13 @@ flowchart TD
 
 **n8n:** recebe solicitação autorizada de envio, chama provedor, reporta aceitação/erro, recebe webhooks do provedor e devolve eventos normalizados. Sem calcular próxima campanha, margem, segmento, opt-in ou recompensa.
 
-**FoodApp/app de pedidos existente:** fonte de verdade de catálogo vendável, preço, carrinho, checkout, pedidos, pagamentos e entregas. Integração via API/eventos; o Sales Engine mantém projeções e snapshots para CRM e relatórios, sem editar diretamente o banco do FoodApp.
+**SamJoE Food/app de pedidos existente:** fonte de verdade de catálogo vendável, preço, carrinho, checkout, pedidos, pagamentos e entregas. Integração via API/eventos; o Sales Engine mantém projeções e snapshots para CRM e relatórios, sem editar diretamente o banco do SamJoE Food.
 
 **Sistema de custos existente:** fonte prioritária das fichas técnicas, ingredientes, custos e lotes. Sales Engine recebe snapshots dos custos usados na venda por adaptador, sem incorporar arbitrariamente o banco legado.
 
 ### 3.3 Independência entre produtos
 
-FoodApp e Sales Engine são produtos vendáveis e implantáveis de forma independente. Cada um terá repositório, banco, configuração, domínio, autenticação e ciclo de release próprios. A indisponibilidade do Sales Engine não pode impedir catálogo, checkout ou acompanhamento de pedidos no FoodApp.
+SamJoE Food e Sales Engine são produtos vendáveis e implantáveis de forma independente. Cada um terá repositório, banco, configuração, domínio, autenticação e ciclo de release próprios. A indisponibilidade do Sales Engine não pode impedir catálogo, checkout ou acompanhamento de pedidos no SamJoE Food.
 
 Integrações usam HTTPS, contratos versionados, assinatura HMAC, `event_id` e chaves de idempotência. Não haverá leitura direta do banco do outro produto nem importação por caminho relativo entre repositórios. Contratos podem ser publicados como pacote versionado `@samjoe/contracts` ou gerar clientes a partir de OpenAPI, sem acoplar os deploys.
 
@@ -432,7 +432,7 @@ Painel de capital de giro: `pedidos confirmados`, `pedidos pagos`, `valor a rece
 
 Para mensagens recebidas: `type=inbound_message`, `contact_phone_e164`, `message_body` (sanitizado, retenção mínima), `occurred_at`, `provider_message_id`. Webhook não pode enviar pedidos falsos sem autenticação.
 
-### 7.3 FoodApp/app existente → Sales Engine: `POST /api/v1/integrations/orders/events`
+### 7.3 SamJoE Food/app existente → Sales Engine: `POST /api/v1/integrations/orders/events`
 
 ```json
 {

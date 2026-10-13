@@ -1,29 +1,39 @@
-import { randomUUID } from 'node:crypto';
+﻿import { randomUUID } from 'node:crypto';
 import type { Database } from '../core/db.js';
 import { normalizeBrazilianPhone } from '../domain/phone.js';
 import { recordConsents } from './consent-service.js';
 
-export type FoodAppCustomer = {
+export type SamJoeFoodCustomer = {
   external_id: string;
   phone?: string;
   email?: string;
   name?: string;
 };
 
-export type FoodAppOrder = {
+export type SamJoeFoodOrderItem = {
+  external_product_id?: string;
+  name?: string;
+  category?: string;
+  quantity?: number;
+  unit_price_cents?: number;
+};
+
+export type SamJoeFoodOrder = {
   external_id: string;
   total_cents: number;
   cost_cents?: number;
+  ref?: string;
+  items?: SamJoeFoodOrderItem[];
 };
 
-export type FoodAppEventPayload = {
+export type SamJoeFoodEventPayload = {
   event_id: string;
   event_type:
     | 'customer.created' | 'customer.updated' | 'order.created'
     | 'order.paid' | 'order.cancelled' | 'order.refunded';
   occurred_at: string;
-  customer: FoodAppCustomer;
-  order?: FoodAppOrder;
+  customer: SamJoeFoodCustomer;
+  order?: SamJoeFoodOrder;
 };
 
 type IntegrationRow = {
@@ -34,19 +44,19 @@ type IntegrationRow = {
   updated_at: Date | string;
 };
 
-export async function getFoodAppConfig(db: Database, tenantId: string) {
+export async function getSamJoeFoodConfig(db: Database, tenantId: string) {
   const result = await db.query<IntegrationRow>(
     `SELECT id, status, last_event_at, updated_at
-       FROM integration_connections WHERE tenant_id = $1 AND integration_type = 'foodapp'`,
+       FROM integration_connections WHERE tenant_id = $1 AND integration_type = 'samjoe_food'`,
     [tenantId],
   );
   return result.rows[0] ?? null;
 }
 
-export async function getFoodAppSecret(db: Database, tenantId: string): Promise<string | null> {
+export async function getSamJoeFoodSecret(db: Database, tenantId: string): Promise<string | null> {
   const result = await db.query<{ settings_json: Record<string, unknown> | string }>(
     `SELECT settings_json FROM integration_connections
-      WHERE tenant_id = $1 AND integration_type = 'foodapp' AND status = 'active'`,
+      WHERE tenant_id = $1 AND integration_type = 'samjoe_food' AND status = 'active'`,
     [tenantId],
   );
   const row = result.rows[0];
@@ -55,12 +65,12 @@ export async function getFoodAppSecret(db: Database, tenantId: string): Promise<
   return typeof settings.hmac_secret === 'string' ? settings.hmac_secret : null;
 }
 
-export async function upsertFoodAppConfig(
+export async function upsertSamJoeFoodConfig(
   db: Database, tenantId: string,
   input: { hmacSecret?: string; status: 'active' | 'disabled' },
 ) {
   const existing = await db.query<{ id: string; settings_json: Record<string, unknown> | string }>(
-    `SELECT id, settings_json FROM integration_connections WHERE tenant_id = $1 AND integration_type = 'foodapp'`,
+    `SELECT id, settings_json FROM integration_connections WHERE tenant_id = $1 AND integration_type = 'samjoe_food'`,
     [tenantId],
   );
 
@@ -78,19 +88,19 @@ export async function upsertFoodAppConfig(
     await db.query(
       `INSERT INTO integration_connections
         (id, tenant_id, integration_type, status, settings_json)
-       VALUES ($1, $2, 'foodapp', $3, $4::jsonb)`,
+       VALUES ($1, $2, 'samjoe_food', $3, $4::jsonb)`,
       [randomUUID(), tenantId, input.status, JSON.stringify(input.hmacSecret ? { hmac_secret: input.hmacSecret } : {})],
     );
   }
 
-  return getFoodAppConfig(db, tenantId);
+  return getSamJoeFoodConfig(db, tenantId);
 }
 
-async function resolveContact(db: Database, tenantId: string, customer: FoodAppCustomer) {
+async function resolveContact(db: Database, tenantId: string, customer: SamJoeFoodCustomer) {
   if (customer.external_id) {
     const link = await db.query<{ contact_id: string }>(
       `SELECT contact_id FROM external_customer_links
-       WHERE tenant_id = $1 AND source = 'foodapp' AND external_customer_id = $2`,
+       WHERE tenant_id = $1 AND source = 'samjoe_food' AND external_customer_id = $2`,
       [tenantId, customer.external_id],
     );
     if (link.rows[0]) return { contactId: link.rows[0].contact_id, ambiguous: false };
@@ -104,7 +114,7 @@ async function resolveContact(db: Database, tenantId: string, customer: FoodAppC
         'SELECT id FROM contacts WHERE tenant_id = $1 AND phone_e164 = $2',
         [tenantId, phone],
       );
-      if (contacts.rows.length === 1) return { contactId: contacts.rows[0].id, ambiguous: false };
+      if (contacts.rows.length === 1) return { contactId: contacts.rows[0]!.id, ambiguous: false };
       if (contacts.rows.length > 1) return { contactId: null, ambiguous: true };
     }
   }
@@ -114,7 +124,7 @@ async function resolveContact(db: Database, tenantId: string, customer: FoodAppC
       'SELECT id FROM contacts WHERE tenant_id = $1 AND email = $2',
       [tenantId, customer.email.toLowerCase()],
     );
-    if (contacts.rows.length === 1) return { contactId: contacts.rows[0].id, ambiguous: false };
+    if (contacts.rows.length === 1) return { contactId: contacts.rows[0]!.id, ambiguous: false };
     if (contacts.rows.length > 1) return { contactId: null, ambiguous: true };
   }
 
@@ -125,7 +135,7 @@ async function ensureExternalLink(db: Database, tenantId: string, contactId: str
   try {
     await db.query(
       `INSERT INTO external_customer_links (id, tenant_id, contact_id, source, external_customer_id)
-       VALUES ($1, $2, $3, 'foodapp', $4)`,
+       VALUES ($1, $2, $3, 'samjoe_food', $4)`,
       [randomUUID(), tenantId, contactId, externalId],
     );
   } catch (err) {
@@ -134,14 +144,14 @@ async function ensureExternalLink(db: Database, tenantId: string, contactId: str
   }
 }
 
-async function createContactFromFoodApp(db: Database, tenantId: string, customer: FoodAppCustomer) {
+async function createContactFromSamJoeFood(db: Database, tenantId: string, customer: SamJoeFoodCustomer) {
   let phone: string | null = null;
   try { if (customer.phone) phone = normalizeBrazilianPhone(customer.phone); } catch { /* ignore */ }
   const id = randomUUID();
   const result = await db.query<{ id: string }>(
     `INSERT INTO contacts (id, tenant_id, full_name, phone_e164, email, origin, stage)
-     VALUES ($1, $2, $3, $4, $5, 'foodapp', 'prospect') RETURNING id`,
-    [id, tenantId, customer.name?.trim() || 'Cliente FoodApp', phone, customer.email?.toLowerCase() ?? null],
+     VALUES ($1, $2, $3, $4, $5, 'samjoe_food', 'prospect') RETURNING id`,
+    [id, tenantId, customer.name?.trim() || 'Cliente SamJoE Food', phone, customer.email?.toLowerCase() ?? null],
   );
   return result.rows[0];
 }
@@ -170,7 +180,7 @@ async function findLastTouchCampaign(
   return null;
 }
 
-export async function processFoodAppEvent(db: Database, tenantId: string, event: FoodAppEventPayload) {
+export async function processSamJoeFoodEvent(db: Database, tenantId: string, event: SamJoeFoodEventPayload) {
   const { event_type, event_id, occurred_at, customer, order } = event;
 
   const { contactId, ambiguous } = await resolveContact(db, tenantId, customer);
@@ -179,15 +189,15 @@ export async function processFoodAppEvent(db: Database, tenantId: string, event:
   if (event_type === 'customer.created') {
     let id = contactId;
     if (!id) {
-      const created = await createContactFromFoodApp(db, tenantId, customer);
+      const created = await createContactFromSamJoeFood(db, tenantId, customer);
       id = created?.id ?? null;
     }
     if (id) {
       await ensureExternalLink(db, tenantId, id, customer.external_id);
       // Implicitly grant order_updates consent — the customer placed an order on the app.
       await recordConsents(db, tenantId, id, null, {
-        channel: 'foodapp', purposes: ['order_updates'], action: 'granted',
-        source: 'foodapp_signup', policyVersion: '1.0', occurredAt: occurred_at,
+        channel: 'samjoe_food', purposes: ['order_updates'], action: 'granted',
+        source: 'samjoe_food_signup', policyVersion: '1.0', occurredAt: occurred_at,
       });
     }
     await touchIntegration(db, tenantId, occurred_at);
@@ -207,24 +217,59 @@ export async function processFoodAppEvent(db: Database, tenantId: string, event:
 
   if (event_type === 'order.paid' && order) {
     if (contactId) await ensureExternalLink(db, tenantId, contactId, customer.external_id);
-    const campaignId = contactId ? await findLastTouchCampaign(db, tenantId, contactId, occurred_at) : null;
+    let campaignId: string | null = null;
+    if (order.ref && /^[0-9a-f]{8}$/i.test(order.ref)) {
+      const refMatch = await db.query<{ id: string }>(
+        `SELECT id FROM campaigns WHERE tenant_id = $1 AND id::text LIKE $2 LIMIT 1`,
+        [tenantId, `${order.ref.toLowerCase()}%`],
+      );
+      campaignId = refMatch.rows[0]?.id ?? null;
+    }
+    if (!campaignId && contactId) {
+      campaignId = await findLastTouchCampaign(db, tenantId, contactId, occurred_at);
+    }
+    const conversionId = randomUUID();
     try {
       await db.query(
         `INSERT INTO campaign_conversions
           (id, tenant_id, contact_id, campaign_id, source, external_event_id, external_order_id,
            status, revenue_cents, cost_cents, margin_cents, occurred_at, metadata_json)
-         VALUES ($1, $2, $3, $4, 'foodapp', $5, $6, 'paid', $7, $8, $9, $10, $11::jsonb)`,
+         VALUES ($1, $2, $3, $4, 'samjoe_food', $5, $6, 'paid', $7, $8, $9, $10, $11::jsonb)`,
         [
-          randomUUID(), tenantId, contactId, campaignId, event_id, order.external_id,
+          conversionId, tenantId, contactId, campaignId, event_id, order.external_id,
           order.total_cents, order.cost_cents ?? null,
           order.cost_cents != null ? order.total_cents - order.cost_cents : null,
-          occurred_at, JSON.stringify({ customer_external_id: customer.external_id }),
+          occurred_at, JSON.stringify({ customer_external_id: customer.external_id, ...(order.ref ? { utm_ref: order.ref } : {}) }),
         ],
       );
     } catch (err) {
       const pgErr = err as Error & { code?: string };
       if (pgErr.code === '23505') return { kind: 'duplicate' as const, event_type };
       throw err;
+    }
+
+    if (order.items?.length) {
+      for (const item of order.items) {
+        let productId: string | null = null;
+        if (item.external_product_id) {
+          const pMatch = await db.query<{ id: string }>(
+            `SELECT id FROM products WHERE tenant_id = $1 AND sku = $2 LIMIT 1`,
+            [tenantId, item.external_product_id],
+          );
+          productId = pMatch.rows[0]?.id ?? null;
+        }
+        await db.query(
+          `INSERT INTO order_items
+             (id, tenant_id, conversion_id, contact_id, product_id, external_product_id,
+              product_name, category, quantity, unit_price_cents)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            randomUUID(), tenantId, conversionId, contactId, productId,
+            item.external_product_id ?? null, item.name ?? null, item.category ?? null,
+            item.quantity ?? 1, item.unit_price_cents ?? 0,
+          ],
+        );
+      }
     }
     if (contactId) {
       await db.query(
@@ -242,7 +287,7 @@ export async function processFoodAppEvent(db: Database, tenantId: string, event:
     await db.query(
       `UPDATE campaign_conversions
           SET status = $1, revenue_cents = 0, margin_cents = 0
-        WHERE tenant_id = $2 AND source = 'foodapp' AND external_order_id = $3 AND status = 'paid'`,
+        WHERE tenant_id = $2 AND source = 'samjoe_food' AND external_order_id = $3 AND status = 'paid'`,
       [newStatus, tenantId, order.external_id],
     );
     await touchIntegration(db, tenantId, occurred_at);
@@ -256,7 +301,7 @@ export async function processFoodAppEvent(db: Database, tenantId: string, event:
 async function touchIntegration(db: Database, tenantId: string, occurredAt: string) {
   await db.query(
     `UPDATE integration_connections SET last_event_at = $1, updated_at = now()
-     WHERE tenant_id = $2 AND integration_type = 'foodapp'`,
+     WHERE tenant_id = $2 AND integration_type = 'samjoe_food'`,
     [occurredAt, tenantId],
   );
 }

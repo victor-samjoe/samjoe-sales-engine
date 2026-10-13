@@ -2,6 +2,9 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import sensible from '@fastify/sensible';
+import multipart from '@fastify/multipart';
+import staticPlugin from '@fastify/static';
+import path from 'node:path';
 import type { Database } from './core/db.js';
 import type { AppConfig } from './core/config.js';
 import { healthRoutes } from './routes/health.js';
@@ -13,6 +16,13 @@ import { campaignRoutes } from './routes/campaigns.js';
 import { dispatchRoutes } from './routes/dispatch.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { analyticsRoutes } from './routes/analytics.js';
+import { settingsRoutes } from './routes/settings.js';
+import { uploadRoutes } from './routes/uploads.js';
+import { webhookRoutes } from './routes/webhooks.js';
+import { audienceRoutes } from './routes/audiences.js';
+import { whatsappRoutes } from './routes/whatsapp.js';
+import { internalRoutes } from './routes/internal.js';
+import { activateRoutes } from './routes/activate.js';
 
 export async function buildApp(options: {
   db: Database;
@@ -30,6 +40,10 @@ export async function buildApp(options: {
   await app.register(sensible);
   await app.register(cors, { origin: false });
   await app.register(jwt, { secret: options.config.jwtSecret });
+  await app.register(multipart);
+
+  const publicDir = path.join(process.cwd(), 'public');
+  await app.register(staticPlugin, { root: publicDir, prefix: '/', decorateReply: false });
 
   app.decorate('authenticate', async function authenticate(request, reply) {
     try {
@@ -79,6 +93,13 @@ export async function buildApp(options: {
   await dispatchRoutes(app, options.db);
   await integrationRoutes(app, options.db);
   await analyticsRoutes(app, options.db);
+  await settingsRoutes(app, options.db);
+  await uploadRoutes(app);
+  await webhookRoutes(app, options.db);
+  await audienceRoutes(app, options.db);
+  await whatsappRoutes(app, options.db);
+  await internalRoutes(app, options.db, options.config);
+  await activateRoutes(app, options.db);
   await crmRoutes(app);
   return app;
 }

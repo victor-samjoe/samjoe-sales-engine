@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+﻿import { afterEach, describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -13,6 +13,7 @@ const config: AppConfig = {
   databaseUrl: 'memory',
   jwtSecret: 'test-secret-with-at-least-32-characters',
   jwtExpiresIn: '1h',
+  serviceKey: undefined,
 };
 
 const apps: FastifyInstance[] = [];
@@ -267,7 +268,7 @@ describe('API foundation', () => {
     expect(jobs.statusCode).toBe(200);
     const jobList = jobs.json<{ data: Array<{ recipient_id: string; phone_e164: string }> }>();
     expect(jobList.data).toHaveLength(1);
-    expect(jobList.data[0].phone_e164).toBe('+5511977771111');
+    expect(jobList.data[0]!.phone_e164).toBe('+5511977771111');
 
     const reApprove = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
     expect(reApprove.statusCode).toBe(409);
@@ -297,7 +298,7 @@ describe('API foundation', () => {
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
 
     const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
-    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0].recipient_id;
+    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0]!.recipient_id;
 
     const deliveredAt = new Date().toISOString();
     const event1 = await app.inject({
@@ -318,9 +319,9 @@ describe('API foundation', () => {
       'SELECT last_outbound_at, next_eligible_at FROM contacts WHERE id = $1 AND tenant_id = $2',
       [contactId, seeded.tenantId],
     );
-    expect(contactRow.rows[0].last_outbound_at).toBeTruthy();
-    expect(contactRow.rows[0].next_eligible_at).toBeTruthy();
-    const nextEligible = new Date(contactRow.rows[0].next_eligible_at!);
+    expect(contactRow.rows[0]!.last_outbound_at).toBeTruthy();
+    expect(contactRow.rows[0]!.next_eligible_at).toBeTruthy();
+    const nextEligible = new Date(contactRow.rows[0]!.next_eligible_at!);
     const delivered = new Date(deliveredAt);
     expect(nextEligible.getTime()).toBeGreaterThan(delivered.getTime());
   });
@@ -360,32 +361,32 @@ describe('API foundation', () => {
   });
 });
 
-const HMAC_SECRET = 'super-secret-foodapp-key-32chars!';
+const HMAC_SECRET = 'super-secret-samjoefood-key-32c!';
 
-function foodappHeaders(payload: unknown, secret = HMAC_SECRET): Record<string, string> {
+function samjoeFoodHeaders(payload: unknown, secret = HMAC_SECRET): Record<string, string> {
   const body = JSON.stringify(payload);
   const sig = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
   return {
     'content-type': 'application/json',
-    'x-foodapp-signature': sig,
-    'x-foodapp-timestamp': new Date().toISOString(),
+    'x-samjoe-food-signature': sig,
+    'x-samjoe-food-timestamp': new Date().toISOString(),
   };
 }
 
-describe('FoodApp integration (Fase 4)', () => {
-  it('configures FoodApp integration and retrieves config', async () => {
+describe('SamJoE Food integration (Fase 4)', () => {
+  it('configures SamJoE Food integration and retrieves config', async () => {
     const { app, seeded } = await setup();
     const token = await login(app, seeded);
     const h = { authorization: `Bearer ${token}` };
 
     const put = await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: h,
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
     expect(put.statusCode).toBe(200);
     expect(put.json<{ data: { status: string } }>().data.status).toBe('active');
 
-    const get = await app.inject({ method: 'GET', url: '/api/v1/integrations/foodapp', headers: h });
+    const get = await app.inject({ method: 'GET', url: '/api/v1/integrations/samjoe-food', headers: h });
     expect(get.statusCode).toBe(200);
     expect(get.json<{ data: { status: string } }>().data.status).toBe('active');
     expect(JSON.stringify(get.json())).not.toContain(HMAC_SECRET);
@@ -395,18 +396,18 @@ describe('FoodApp integration (Fase 4)', () => {
     const { app, seeded } = await setup();
     const token = await login(app, seeded);
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: { authorization: `Bearer ${token}` },
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: { authorization: `Bearer ${token}` },
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
 
     const payload = { event_id: 'e-001', event_type: 'customer.created', occurred_at: new Date().toISOString(), customer: { external_id: 'c-001' } };
     const badHeaders = {
       'content-type': 'application/json',
-      'x-foodapp-signature': 'sha256=badhash',
-      'x-foodapp-timestamp': new Date().toISOString(),
+      'x-samjoe-food-signature': 'sha256=badhash',
+      'x-samjoe-food-timestamp': new Date().toISOString(),
       'x-tenant-id': seeded.tenantId,
     };
-    const res = await app.inject({ method: 'POST', url: '/api/v1/integrations/foodapp/events', headers: badHeaders, payload });
+    const res = await app.inject({ method: 'POST', url: '/api/v1/integrations/samjoe-food/events', headers: badHeaders, payload });
     expect(res.statusCode).toBe(401);
     expect(res.json<{ error: { code: string } }>().error.code).toBe('INVALID_SIGNATURE');
   });
@@ -415,7 +416,7 @@ describe('FoodApp integration (Fase 4)', () => {
     const { app, seeded } = await setup();
     const token = await login(app, seeded);
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: { authorization: `Bearer ${token}` },
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: { authorization: `Bearer ${token}` },
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
 
@@ -424,8 +425,8 @@ describe('FoodApp integration (Fase 4)', () => {
     const body = JSON.stringify(payload);
     const sig = 'sha256=' + createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
     const res = await app.inject({
-      method: 'POST', url: '/api/v1/integrations/foodapp/events',
-      headers: { 'content-type': 'application/json', 'x-foodapp-signature': sig, 'x-foodapp-timestamp': oldTs, 'x-tenant-id': seeded.tenantId },
+      method: 'POST', url: '/api/v1/integrations/samjoe-food/events',
+      headers: { 'content-type': 'application/json', 'x-samjoe-food-signature': sig, 'x-samjoe-food-timestamp': oldTs, 'x-tenant-id': seeded.tenantId },
       payload,
     });
     expect(res.statusCode).toBe(401);
@@ -438,7 +439,7 @@ describe('FoodApp integration (Fase 4)', () => {
     const h = { authorization: `Bearer ${token}` };
 
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: h,
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
 
@@ -446,28 +447,28 @@ describe('FoodApp integration (Fase 4)', () => {
       event_id: 'cust-create-001',
       event_type: 'customer.created',
       occurred_at: new Date().toISOString(),
-      customer: { external_id: 'fa-cust-001', phone: '(11) 97777-1234', name: 'João FoodApp' },
+      customer: { external_id: 'fa-cust-001', phone: '(11) 97777-1234', name: 'João SamJoE Food' },
     };
     const res = await app.inject({
-      method: 'POST', url: '/api/v1/integrations/foodapp/events',
-      headers: { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId },
+      method: 'POST', url: '/api/v1/integrations/samjoe-food/events',
+      headers: { ...samjoeFoodHeaders(payload), 'x-tenant-id': seeded.tenantId },
       payload,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json<{ accepted: boolean }>().accepted).toBe(true);
 
     const link = await db.query(
-      `SELECT contact_id FROM external_customer_links WHERE tenant_id = $1 AND source = 'foodapp' AND external_customer_id = 'fa-cust-001'`,
+      `SELECT contact_id FROM external_customer_links WHERE tenant_id = $1 AND source = 'samjoe_food' AND external_customer_id = 'fa-cust-001'`,
       [seeded.tenantId],
     );
     expect(link.rows).toHaveLength(1);
 
     const contact = await db.query(
       `SELECT full_name, phone_e164 FROM contacts WHERE id = $1`,
-      [link.rows[0].contact_id],
+      [link.rows[0]!.contact_id],
     );
-    expect(contact.rows[0].full_name).toBe('João FoodApp');
-    expect(contact.rows[0].phone_e164).toBe('+5511977771234');
+    expect(contact.rows[0]!.full_name).toBe('João SamJoE Food');
+    expect(contact.rows[0]!.phone_e164).toBe('+5511977771234');
   });
 
   it('order.paid records conversion with last-touch attribution and updates last_purchase_at', async () => {
@@ -496,7 +497,7 @@ describe('FoodApp integration (Fase 4)', () => {
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
 
     const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
-    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0].recipient_id;
+    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0]!.recipient_id;
 
     const deliveredAt = new Date(Date.now() - 60_000).toISOString();
     await app.inject({
@@ -504,13 +505,13 @@ describe('FoodApp integration (Fase 4)', () => {
       payload: { recipientId, eventType: 'delivered', provider: 'evolution', externalEventId: 'disp-evt-001', occurredAt: deliveredAt },
     });
 
-    // Configure FoodApp
+    // Configure SamJoE Food
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: h,
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
 
-    // Send order.paid via FoodApp webhook — customer matched by phone
+    // Send order.paid via SamJoE Food webhook — customer matched by phone
     const orderedAt = new Date().toISOString();
     const payload = {
       event_id: 'order-paid-001',
@@ -520,28 +521,28 @@ describe('FoodApp integration (Fase 4)', () => {
       order: { external_id: 'ord-001', total_cents: 4990, cost_cents: 1500 },
     };
     const res = await app.inject({
-      method: 'POST', url: '/api/v1/integrations/foodapp/events',
-      headers: { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId },
+      method: 'POST', url: '/api/v1/integrations/samjoe-food/events',
+      headers: { ...samjoeFoodHeaders(payload), 'x-tenant-id': seeded.tenantId },
       payload,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json<{ accepted: boolean }>().accepted).toBe(true);
 
     const conversion = await db.query<{ campaign_id: string; revenue_cents: number; margin_cents: number; status: string }>(
-      `SELECT campaign_id, revenue_cents, margin_cents, status FROM campaign_conversions WHERE tenant_id = $1 AND source = 'foodapp'`,
+      `SELECT campaign_id, revenue_cents, margin_cents, status FROM campaign_conversions WHERE tenant_id = $1 AND source = 'samjoe_food'`,
       [seeded.tenantId],
     );
     expect(conversion.rows).toHaveLength(1);
-    expect(conversion.rows[0].campaign_id).toBe(campaignId);
-    expect(conversion.rows[0].revenue_cents).toBe(4990);
-    expect(conversion.rows[0].margin_cents).toBe(3490);
-    expect(conversion.rows[0].status).toBe('paid');
+    expect(conversion.rows[0]!.campaign_id).toBe(campaignId);
+    expect(conversion.rows[0]!.revenue_cents).toBe(4990);
+    expect(conversion.rows[0]!.margin_cents).toBe(3490);
+    expect(conversion.rows[0]!.status).toBe('paid');
 
     const contactRow = await db.query<{ last_purchase_at: Date | null }>(
       `SELECT last_purchase_at FROM contacts WHERE id = $1 AND tenant_id = $2`,
       [contactId, seeded.tenantId],
     );
-    expect(contactRow.rows[0].last_purchase_at).toBeTruthy();
+    expect(contactRow.rows[0]!.last_purchase_at).toBeTruthy();
   });
 
   it('order.paid is idempotent — duplicate event returns accepted:false', async () => {
@@ -549,7 +550,7 @@ describe('FoodApp integration (Fase 4)', () => {
     const token = await login(app, seeded);
     const h = { authorization: `Bearer ${token}` };
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: h,
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
 
@@ -560,11 +561,11 @@ describe('FoodApp integration (Fase 4)', () => {
       customer: { external_id: 'fa-dup-001' },
       order: { external_id: 'ord-dup-001', total_cents: 2000 },
     };
-    const tenantHeaders = { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId };
-    const first = await app.inject({ method: 'POST', url: '/api/v1/integrations/foodapp/events', headers: tenantHeaders, payload });
+    const tenantHeaders = { ...samjoeFoodHeaders(payload), 'x-tenant-id': seeded.tenantId };
+    const first = await app.inject({ method: 'POST', url: '/api/v1/integrations/samjoe-food/events', headers: tenantHeaders, payload });
     expect(first.json<{ accepted: boolean }>().accepted).toBe(true);
 
-    const second = await app.inject({ method: 'POST', url: '/api/v1/integrations/foodapp/events', headers: { ...foodappHeaders(payload), 'x-tenant-id': seeded.tenantId }, payload });
+    const second = await app.inject({ method: 'POST', url: '/api/v1/integrations/samjoe-food/events', headers: { ...samjoeFoodHeaders(payload), 'x-tenant-id': seeded.tenantId }, payload });
     expect(second.json<{ accepted: boolean; reason?: string }>().accepted).toBe(false);
     expect(second.json<{ reason: string }>().reason).toBe('duplicate');
   });
@@ -574,7 +575,7 @@ describe('FoodApp integration (Fase 4)', () => {
     const token = await login(app, seeded);
     const h = { authorization: `Bearer ${token}` };
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: h,
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
 
@@ -587,8 +588,8 @@ describe('FoodApp integration (Fase 4)', () => {
       order: { external_id: 'ord-refund-001', total_cents: 9900 },
     };
     await app.inject({
-      method: 'POST', url: '/api/v1/integrations/foodapp/events',
-      headers: { ...foodappHeaders(paidPayload), 'x-tenant-id': seeded.tenantId },
+      method: 'POST', url: '/api/v1/integrations/samjoe-food/events',
+      headers: { ...samjoeFoodHeaders(paidPayload), 'x-tenant-id': seeded.tenantId },
       payload: paidPayload,
     });
 
@@ -601,19 +602,19 @@ describe('FoodApp integration (Fase 4)', () => {
       order: { external_id: 'ord-refund-001', total_cents: 0 },
     };
     const res = await app.inject({
-      method: 'POST', url: '/api/v1/integrations/foodapp/events',
-      headers: { ...foodappHeaders(refundPayload), 'x-tenant-id': seeded.tenantId },
+      method: 'POST', url: '/api/v1/integrations/samjoe-food/events',
+      headers: { ...samjoeFoodHeaders(refundPayload), 'x-tenant-id': seeded.tenantId },
       payload: refundPayload,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json<{ accepted: boolean }>().accepted).toBe(true);
 
     const conv = await db.query<{ status: string; revenue_cents: number }>(
-      `SELECT status, revenue_cents FROM campaign_conversions WHERE tenant_id = $1 AND source = 'foodapp' AND external_order_id = 'ord-refund-001'`,
+      `SELECT status, revenue_cents FROM campaign_conversions WHERE tenant_id = $1 AND source = 'samjoe_food' AND external_order_id = 'ord-refund-001'`,
       [seeded.tenantId],
     );
-    expect(conv.rows[0].status).toBe('refunded');
-    expect(conv.rows[0].revenue_cents).toBe(0);
+    expect(conv.rows[0]!.status).toBe('refunded');
+    expect(conv.rows[0]!.revenue_cents).toBe(0);
   });
 });
 
@@ -656,16 +657,16 @@ describe('Analytics (dashboard de conversões)', () => {
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
 
     const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
-    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0].recipient_id;
+    const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0]!.recipient_id;
 
     await app.inject({
       method: 'POST', url: '/api/v1/dispatch/events', headers: h,
       payload: { recipientId, eventType: 'read', provider: 'evolution', externalEventId: 'analytics-evt-001', occurredAt: new Date(Date.now() - 60_000).toISOString() },
     });
 
-    // FoodApp order.paid → attribution
+    // SamJoE Food order.paid → attribution
     await app.inject({
-      method: 'PUT', url: '/api/v1/integrations/foodapp', headers: h,
+      method: 'PUT', url: '/api/v1/integrations/samjoe-food', headers: h,
       payload: { hmacSecret: HMAC_SECRET, status: 'active' },
     });
     const orderPayload = {
@@ -676,8 +677,8 @@ describe('Analytics (dashboard de conversões)', () => {
       order: { external_id: 'analytics-ord-001', total_cents: 8000, cost_cents: 3000 },
     };
     await app.inject({
-      method: 'POST', url: '/api/v1/integrations/foodapp/events',
-      headers: { ...foodappHeaders(orderPayload), 'x-tenant-id': seeded.tenantId },
+      method: 'POST', url: '/api/v1/integrations/samjoe-food/events',
+      headers: { ...samjoeFoodHeaders(orderPayload), 'x-tenant-id': seeded.tenantId },
       payload: orderPayload,
     });
 

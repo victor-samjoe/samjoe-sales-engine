@@ -1,4 +1,4 @@
-# Inventário técnico — SamJoE Sales Engine
+﻿# Inventário técnico — SamJoE Sales Engine
 
 Data: 2026-10-10
 
@@ -9,11 +9,11 @@ Data: 2026-10-10
 - Papel: CRM, consentimento, campanhas, recorrência, indicações e inteligência comercial.
 - Stack decidida: Node.js, TypeScript, Fastify, PostgreSQL e Next.js.
 
-## FoodApp e pedido atual
+## SamJoE Food e pedido atual
 
 ### Especificação do produto
 
-- Diretório: `E:\SamJoE FoodApp`.
+- Diretório: `E:\SamJoE SamJoE Food`.
 - A spec define plataforma multi-tenant, frontend Next.js, API Node.js/TypeScript, PostgreSQL, Redis, R2, n8n, Evolution e Mercado Pago.
 - Ainda não havia aplicação implementada nesse diretório no início deste inventário.
 
@@ -52,7 +52,7 @@ Data: 2026-10-10
 
 - Diretório: `E:\SamJoE Raio de Atendimento\samjoe-localizacao-mvp`.
 - Serviço JavaScript/Cloudflare Worker com regras de área, CEP e rotas, acompanhado de testes.
-- Decisão: FoodApp consome esse serviço para cotação/validação. Sales Engine recebe somente dados consolidados do pedido.
+- Decisão: SamJoE Food consome esse serviço para cotação/validação. Sales Engine recebe somente dados consolidados do pedido.
 
 ## n8n e WhatsApp
 
@@ -71,9 +71,9 @@ Data: 2026-10-10
 
 | Domínio | Fonte de verdade |
 |---|---|
-| Catálogo, preço, pedido, pagamento e entrega | FoodApp |
+| Catálogo, preço, pedido, pagamento e entrega | SamJoE Food |
 | Contato CRM, consentimento, campanha e indicação | Sales Engine |
 | Ingredientes, ficha técnica, lote e custo efetivo | Sistema de custos |
 | Transporte WhatsApp | n8n + provedor |
-| Área e cotação de entrega | FoodApp/serviço de localização |
+| Área e cotação de entrega | SamJoE Food/serviço de localização |
 

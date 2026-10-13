@@ -1,9 +1,9 @@
-# Arquitetura inicial
+﻿# Arquitetura inicial
 
 ## Contextos independentes
 
 ```text
-FoodApp                         Sales Engine
+SamJoE Food                         Sales Engine
 catálogo                        CRM/consentimento
 carrinho/checkout   eventos     campanhas/fila
 pedidos/pagamentos ---------->  recorrência/indicação
@@ -24,7 +24,7 @@ Next.js Admin
         -> PostgreSQL `sales_engine`
         -> worker/agendador TypeScript
         -> adaptadores versionados
-             -> FoodApp
+             -> SamJoE Food
              -> sistema de custos
              -> n8n
 ```
@@ -56,9 +56,9 @@ Cloudflare DNS/WAF
 
 PostgreSQL, Redis e painéis internos não serão expostos diretamente. Redis será adicionado apenas quando métricas demonstrarem necessidade; a fila inicial será transacional no PostgreSQL.
 
-## Contrato inicial com FoodApp
+## Contrato inicial com SamJoE Food
 
-O endpoint reservado é `POST /api/v1/integrations/orders/events`. Durante a migração, o emissor pode ser um adaptador do Apps Script/Worker. No FoodApp definitivo, a API publica diretamente.
+O endpoint reservado é `POST /api/v1/integrations/orders/events`. Durante a migração, o emissor pode ser um adaptador do Apps Script/Worker. No SamJoE Food definitivo, a API publica diretamente.
 
 Eventos mínimos planejados: `order.created`, `order.confirmed`, `order.paid`, `order.cancelled`, `order.refunded` e `order.fulfilled`.
 

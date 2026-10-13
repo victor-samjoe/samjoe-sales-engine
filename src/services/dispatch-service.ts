@@ -1,6 +1,38 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '../core/db.js';
 
+function toAbsoluteUrl(url: string): string {
+  if (url.startsWith('/')) {
+    const base = (process.env.SERVER_PUBLIC_URL ?? 'http://localhost:4010').replace(/\/$/, '');
+    return `${base}${url}`;
+  }
+  return url;
+}
+
+const EXT_MIME: Record<string, string> = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.gif': 'image/gif', '.webp': 'image/webp',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
+  '.pdf': 'application/pdf',
+};
+
+function inferMime(url: string, mimeType: string | null): string | null {
+  if (mimeType) return mimeType;
+  const ext = url.toLowerCase().replace(/[?#].*$/, '').match(/\.\w+$/)?.[0];
+  return ext ? (EXT_MIME[ext] ?? null) : null;
+}
+
+function injectRef(text: string, ref: string): string {
+  return text.replace(/(https?:\/\/[^\s"'<>]+)/g, (url) => {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}ref=${ref}`;
+  });
+}
+
+function replaceVars(text: string, vars: Record<string, string>): string {
+  return text.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
+}
+
 export type DispatchEventInput = {
   recipientId: string;
   eventType: 'sent' | 'delivered' | 'read' | 'failed';
@@ -20,17 +52,72 @@ type RecipientRow = {
   min_interval_hours: number;
 };
 
+async function getTenantVars(db: Database, tenantId: string): Promise<Record<string, string>> {
+  const result = await db.query<{ settings_json: Record<string, unknown> | string }>(
+    `SELECT settings_json FROM tenants WHERE id = $1`,
+    [tenantId],
+  );
+  const row = result.rows[0];
+  if (!row) return {};
+  const settings = typeof row.settings_json === 'string'
+    ? JSON.parse(row.settings_json) as Record<string, unknown>
+    : row.settings_json;
+  return { app_url: typeof settings.app_url === 'string' ? settings.app_url : '' };
+}
+
 export async function getDispatchJobs(
   db: Database,
   tenantId: string,
   options: { limit?: number; campaignId?: string },
 ) {
   const limit = Math.min(options.limit ?? 50, 200);
-  const params: unknown[] = [tenantId];
-  const campaignFilter = options.campaignId
-    ? ` AND r.campaign_id = $${params.push(options.campaignId)}`
-    : '';
+  const tenantVars = await getTenantVars(db, tenantId);
 
+  // Campanha única: recipients travados em 'dispatching' > 15min viram 'failed' — nunca reenviar.
+  await db.query(
+    `UPDATE campaign_recipients r
+        SET delivery_status = 'failed', dispatched_at = NULL
+       FROM campaigns camp
+      WHERE r.campaign_id = camp.id
+        AND r.tenant_id = $1
+        AND camp.dispatch_mode = 'single'
+        AND r.delivery_status = 'dispatching'
+        AND r.dispatched_at < now() - interval '15 minutes'`,
+    [tenantId],
+  );
+  // Campanha padrão: devolve a 'queued' para nova tentativa.
+  await db.query(
+    `UPDATE campaign_recipients r
+        SET delivery_status = 'queued', dispatched_at = NULL
+       FROM campaigns camp
+      WHERE r.campaign_id = camp.id
+        AND r.tenant_id = $1
+        AND camp.dispatch_mode != 'single'
+        AND r.delivery_status = 'dispatching'
+        AND r.dispatched_at < now() - interval '15 minutes'`,
+    [tenantId],
+  );
+
+  // Claim atômico: marca como 'dispatching' antes de retornar,
+  // impedindo que o próximo poll pegue os mesmos recipients.
+  const claimParams: unknown[] = [tenantId, limit];
+  const campaignFilter = options.campaignId ? ` AND campaign_id = $${claimParams.push(options.campaignId)}` : '';
+  const claimed = await db.query<{ id: string }>(
+    `UPDATE campaign_recipients
+        SET delivery_status = 'dispatching', dispatched_at = now()
+      WHERE id IN (
+        SELECT id FROM campaign_recipients
+         WHERE tenant_id = $1 AND delivery_status = 'queued'${campaignFilter}
+         ORDER BY queued_at, id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+      )
+     RETURNING id`,
+    claimParams,
+  );
+  if (claimed.rows.length === 0) return [];
+
+  const claimedIds = claimed.rows.map((r) => r.id);
   const result = await db.query<{
     recipient_id: string; campaign_id: string; contact_id: string;
     phone_e164: string | null; full_name: string;
@@ -43,10 +130,8 @@ export async function getDispatchJobs(
        FROM campaign_recipients r
        JOIN contacts c ON c.id = r.contact_id AND c.tenant_id = r.tenant_id
        JOIN campaigns camp ON camp.id = r.campaign_id AND camp.tenant_id = r.tenant_id
-      WHERE r.tenant_id = $1 AND r.delivery_status = 'queued'${campaignFilter}
-      ORDER BY r.queued_at, r.id
-      LIMIT $${params.push(limit)}`,
-    params,
+      WHERE r.id = ANY($1) AND r.tenant_id = $2`,
+    [claimedIds, tenantId],
   );
 
   const jobs = [];
@@ -56,15 +141,18 @@ export async function getDispatchJobs(
        WHERE campaign_id = $1 AND tenant_id = $2 ORDER BY created_at`,
       [row.campaign_id, tenantId],
     );
+    const ref = row.campaign_id.slice(0, 8);
+    const msgText = injectRef(replaceVars(row.message_text, tenantVars), ref);
+    const linkUrl = row.link_url ? injectRef(replaceVars(row.link_url, tenantVars), ref) : null;
     jobs.push({
       recipient_id: row.recipient_id,
       campaign_id: row.campaign_id,
       contact_id: row.contact_id,
       phone_e164: row.phone_e164,
       full_name: row.full_name,
-      message_text: row.message_text,
-      link_url: row.link_url,
-      assets: assets.rows,
+      message_text: msgText,
+      link_url: linkUrl,
+      assets: assets.rows.map(a => ({ ...a, url: toAbsoluteUrl(a.url), mime_type: inferMime(a.url, a.mime_type) })),
       queued_at: row.queued_at,
     });
   }
@@ -73,6 +161,7 @@ export async function getDispatchJobs(
 
 const STATUS_TRANSITIONS: Record<string, string[]> = {
   queued: ['sent', 'delivered', 'read', 'failed', 'cancelled'],
+  dispatching: ['sent', 'delivered', 'read', 'failed', 'cancelled'],
   sent: ['delivered', 'read', 'failed', 'cancelled'],
   delivered: ['read'],
   read: [],
@@ -123,7 +212,7 @@ export async function processDispatchEvent(db: Database, tenantId: string, input
   if (input.eventType === 'sent') {
     await db.query(
       `UPDATE campaign_recipients
-          SET delivery_status = 'sent',
+          SET delivery_status = 'sent', dispatched_at = NULL,
               sent_at = CASE WHEN sent_at IS NULL THEN $1 ELSE sent_at END,
               provider_message_id = CASE WHEN provider_message_id IS NULL THEN $2 ELSE provider_message_id END
         WHERE id = $3 AND tenant_id = $4

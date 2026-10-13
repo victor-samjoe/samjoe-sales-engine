@@ -23,16 +23,63 @@ const JobsQuery = Type.Object({
   campaign_id: Type.Optional(Type.String({ format: 'uuid' })),
 });
 
+const RecipientsQuery = Type.Object({
+  status: Type.Optional(Type.String({ maxLength: 20 })),
+  campaign_id: Type.Optional(Type.String({ format: 'uuid' })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+});
+
 export async function dispatchRoutes(app: FastifyInstance, db: Database) {
   app.get<{ Querystring: { limit?: number; campaign_id?: string } }>('/api/v1/dispatch/jobs', {
     onRequest: [app.authenticate], schema: { querystring: JobsQuery },
   }, async (request) => {
     const jobs = await getDispatchJobs(db, request.user.tenantId, {
-      limit: request.query.limit,
-      campaignId: request.query.campaign_id,
+      ...(request.query.limit !== undefined ? { limit: request.query.limit } : {}),
+      ...(request.query.campaign_id !== undefined ? { campaignId: request.query.campaign_id } : {}),
     });
     return { data: jobs, count: jobs.length };
   });
+
+  app.get<{ Querystring: { status?: string; campaign_id?: string; limit?: number; offset?: number } }>(
+    '/api/v1/dispatch/recipients',
+    { onRequest: [app.authenticate], schema: { querystring: RecipientsQuery } },
+    async (request) => {
+      const { status, campaign_id } = request.query;
+      const limit = Math.min(Number(request.query.limit ?? 100), 200);
+      const offset = Number(request.query.offset ?? 0);
+
+      const params: unknown[] = [request.user.tenantId];
+      let where = 'r.tenant_id = $1';
+      if (status) where += ` AND r.delivery_status = $${params.push(status)}`;
+      if (campaign_id) where += ` AND r.campaign_id = $${params.push(campaign_id)}`;
+
+      const totalResult = await db.query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total FROM campaign_recipients r WHERE ${where}`,
+        params,
+      );
+
+      const result = await db.query<{
+        recipient_id: string; campaign_id: string; campaign_name: string;
+        contact_id: string; full_name: string; phone_e164: string | null;
+        delivery_status: string; queued_at: string | null; sent_at: string | null;
+        delivered_at: string | null; read_at: string | null; failed_at: string | null;
+      }>(
+        `SELECT r.id AS recipient_id, r.campaign_id, camp.name AS campaign_name,
+                r.contact_id, c.full_name, c.phone_e164,
+                r.delivery_status, r.queued_at, r.sent_at, r.delivered_at, r.read_at, r.failed_at
+           FROM campaign_recipients r
+           JOIN contacts c ON c.id = r.contact_id AND c.tenant_id = r.tenant_id
+           JOIN campaigns camp ON camp.id = r.campaign_id AND camp.tenant_id = r.tenant_id
+          WHERE ${where}
+          ORDER BY COALESCE(r.sent_at, r.queued_at) DESC NULLS LAST, r.id
+          LIMIT $${params.push(limit)} OFFSET $${params.push(offset)}`,
+        params,
+      );
+
+      return { data: result.rows, count: result.rows.length, total: parseInt(totalResult.rows[0]?.total ?? '0') };
+    },
+  );
 
   app.post('/api/v1/dispatch/events', {
     onRequest: [app.authenticate], schema: { body: DispatchEventBody },

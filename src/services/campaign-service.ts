@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+﻿import { createHash, randomUUID } from 'node:crypto';
 import type { Database } from '../core/db.js';
 
 export type CampaignAssetInput = {
@@ -20,6 +20,7 @@ export type CampaignInput = {
   objective?: string;
   messageText: string;
   linkUrl?: string;
+  dispatchMode?: 'standard' | 'single';
   minIntervalHours?: number;
   maxNotificationsPer30d?: number;
   includeConverted?: boolean;
@@ -46,6 +47,7 @@ type CampaignRow = {
   name: string;
   status: string;
   audience_rules_json: AudienceRules | string;
+  dispatch_mode: 'standard' | 'single';
   min_interval_hours: number;
   max_notifications_per_30d: number;
   include_converted: boolean;
@@ -61,21 +63,25 @@ const parseJson = <T>(value: T | string, fallback: T): T => {
 };
 
 export async function createCampaign(db: Database, tenantId: string, userId: string, input: CampaignInput) {
+  const isSingle = input.dispatchMode === 'single';
   const id = randomUUID();
   const result = await db.query(
     `INSERT INTO campaigns
-      (id, tenant_id, name, objective, message_text, link_url, audience_rules_json,
-       min_interval_hours, max_notifications_per_30d, include_converted,
-       conversion_window_days, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
-     RETURNING id, name, objective, message_text, link_url, status,
+      (id, tenant_id, name, objective, message_text, link_url, dispatch_mode,
+       audience_rules_json, min_interval_hours, max_notifications_per_30d,
+       include_converted, conversion_window_days, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
+     RETURNING id, name, objective, message_text, link_url, status, dispatch_mode,
                audience_rules_json, min_interval_hours, max_notifications_per_30d,
                include_converted, conversion_window_days, created_at, updated_at`,
     [
       id, tenantId, input.name.trim(), input.objective?.trim() ?? null,
       input.messageText.trim(), input.linkUrl?.trim() ?? null,
-      JSON.stringify(input.audienceRules ?? {}), input.minIntervalHours ?? 168,
-      input.maxNotificationsPer30d ?? 4, input.includeConverted ?? true,
+      isSingle ? 'single' : 'standard',
+      JSON.stringify(input.audienceRules ?? {}),
+      isSingle ? 0 : (input.minIntervalHours ?? 168),
+      isSingle ? 1 : (input.maxNotificationsPer30d ?? 4),
+      input.includeConverted ?? true,
       input.conversionWindowDays ?? 7, userId,
     ],
   );
@@ -148,19 +154,20 @@ function evaluateCandidate(
   if (contact.stage === 'blocked') reasons.push('blocked');
   if (!consent || consent.action !== 'granted') reasons.push('marketing_consent_missing');
 
-  const nextEligible = contact.next_eligible_at ? new Date(contact.next_eligible_at) : null;
-  if (nextEligible && nextEligible > now) reasons.push('cooldown');
-  if (contact.last_outbound_at) {
-    const campaignEligibleAt = new Date(new Date(contact.last_outbound_at).getTime() + campaign.min_interval_hours * 3600000);
-    if (campaignEligibleAt > now && !reasons.includes('cooldown')) reasons.push('cooldown');
+  if (campaign.dispatch_mode !== 'single') {
+    const nextEligible = contact.next_eligible_at ? new Date(contact.next_eligible_at) : null;
+    if (nextEligible && nextEligible > now) reasons.push('cooldown');
+    if (contact.last_outbound_at) {
+      const campaignEligibleAt = new Date(new Date(contact.last_outbound_at).getTime() + campaign.min_interval_hours * 3600000);
+      if (campaignEligibleAt > now && !reasons.includes('cooldown')) reasons.push('cooldown');
+    }
+    const cutoff = new Date(now.getTime() - 30 * 86400000);
+    const deliveriesIn30Days = deliveries.filter((delivery) => {
+      const occurredAt = delivery.read_at ?? delivery.delivered_at;
+      return occurredAt && new Date(occurredAt) >= cutoff;
+    }).length;
+    if (deliveriesIn30Days >= campaign.max_notifications_per_30d) reasons.push('frequency_cap');
   }
-
-  const cutoff = new Date(now.getTime() - 30 * 86400000);
-  const deliveriesIn30Days = deliveries.filter((delivery) => {
-    const occurredAt = delivery.read_at ?? delivery.delivered_at;
-    return occurredAt && new Date(occurredAt) >= cutoff;
-  }).length;
-  if (deliveriesIn30Days >= campaign.max_notifications_per_30d) reasons.push('frequency_cap');
   if (rules.stages?.length && !rules.stages.includes(contact.stage)) reasons.push('stage_not_selected');
   if (rules.origins?.length && !rules.origins.includes(contact.origin)) reasons.push('origin_not_selected');
   if (rules.tagsAny?.length && !rules.tagsAny.some((tag) => tags.includes(tag))) reasons.push('tag_not_selected');
@@ -180,14 +187,27 @@ function evaluateCandidate(
 
 export async function generateCampaignPreflight(db: Database, tenantId: string, campaignId: string) {
   const campaignResult = await db.query<CampaignRow>(
-    `SELECT id, name, status, audience_rules_json, min_interval_hours,
-            max_notifications_per_30d, include_converted
+    `SELECT id, name, status, audience_rules_json, dispatch_mode,
+            min_interval_hours, max_notifications_per_30d, include_converted
        FROM campaigns WHERE id = $1 AND tenant_id = $2`,
     [campaignId, tenantId],
   );
   const campaign = campaignResult.rows[0];
   if (!campaign) return { kind: 'not_found' as const };
   if (!['draft', 'preflight_ready'].includes(campaign.status)) return { kind: 'invalid_status' as const, status: campaign.status };
+
+  // Campanha de disparo único: bloqueia novo preflight se já existe qualquer envio real.
+  if (campaign.dispatch_mode === 'single') {
+    const sent = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM campaign_recipients
+        WHERE campaign_id = $1 AND tenant_id = $2
+          AND delivery_status IN ('sent', 'delivered', 'read')`,
+      [campaignId, tenantId],
+    );
+    if (Number(sent.rows[0]?.count ?? 0) > 0) {
+      return { kind: 'already_dispatched' as const };
+    }
+  }
 
   const [contactsResult, consentResult, deliveryResult, conversionResult, integrationResult] = await Promise.all([
     db.query<ContactCandidate>(
@@ -196,6 +216,7 @@ export async function generateCampaignPreflight(db: Database, tenantId: string, 
          FROM contacts WHERE tenant_id = $1 ORDER BY created_at, id`,
       [tenantId],
     ),
+
     db.query<ConsentRow>(
       `SELECT contact_id, action, occurred_at FROM consent_events
         WHERE tenant_id = $1 AND channel = 'whatsapp' AND purpose = 'marketing'
@@ -215,7 +236,7 @@ export async function generateCampaignPreflight(db: Database, tenantId: string, 
     ),
     db.query<{ active: boolean }>(
       `SELECT true AS active FROM integration_connections
-        WHERE tenant_id = $1 AND integration_type = 'foodapp' AND status = 'active' LIMIT 1`,
+        WHERE tenant_id = $1 AND integration_type = 'samjoe_food' AND status = 'active' LIMIT 1`,
       [tenantId],
     ),
   ]);
@@ -409,6 +430,7 @@ export async function updateCampaign(db: Database, tenantId: string, campaignId:
   if (input.objective !== undefined) setParts.push(`objective = ${p(input.objective?.trim() ?? null)}`);
   if (input.messageText !== undefined) setParts.push(`message_text = ${p(input.messageText.trim())}`);
   if (input.linkUrl !== undefined) setParts.push(`link_url = ${p(input.linkUrl?.trim() ?? null)}`);
+  if (input.dispatchMode !== undefined) setParts.push(`dispatch_mode = ${p(input.dispatchMode)}`);
   if (input.minIntervalHours !== undefined) setParts.push(`min_interval_hours = ${p(input.minIntervalHours)}`);
   if (input.maxNotificationsPer30d !== undefined) setParts.push(`max_notifications_per_30d = ${p(input.maxNotificationsPer30d)}`);
   if (input.includeConverted !== undefined) setParts.push(`include_converted = ${p(input.includeConverted)}`);
@@ -456,7 +478,7 @@ export async function getCampaignPreflight(db: Database, tenantId: string, campa
     ),
     db.query<{ active: boolean }>(
       `SELECT true AS active FROM integration_connections
-        WHERE tenant_id = $1 AND integration_type = 'foodapp' AND status = 'active' LIMIT 1`,
+        WHERE tenant_id = $1 AND integration_type = 'samjoe_food' AND status = 'active' LIMIT 1`,
       [tenantId],
     ),
   ]);

@@ -1,4 +1,4 @@
-# Início rápido para o agente local
+﻿# Início rápido para o agente local
 
 Você atuará como engenheiro responsável pelo **SamJoE Sales Engine**.
 
@@ -6,7 +6,7 @@ Leia nesta ordem:
 1. `SPEC_SAMJOE_SALES_ENGINE_v1.0.md` — escopo, arquitetura, regras, modelos, integrações, testes e critérios de aceite.
 2. `AGENT_IMPLEMENTATION_PLAN.md` — checkpoints e prioridades.
 
-**Missão:** construir um motor comercial independente em Node.js, TypeScript e Fastify para a SamJoE Confeitaria, deixando n8n como adaptador de WhatsApp. O FoodApp e o Sales Engine são produtos vendáveis separados e se integram somente por APIs/eventos versionados. Reaproveitar o app de pedidos, sistema de custos, planilhas e fluxos existentes após inspecionar os repositórios. Primeiro MVP: contatos, consentimento, projeções de pedidos, campanhas em dry-run e relatórios; depois mensageria, recorrência e indicações. SaaS somente após validação real.
+**Missão:** construir um motor comercial independente em Node.js, TypeScript e Fastify para a SamJoE Confeitaria, deixando n8n como adaptador de WhatsApp. O SamJoE Food e o Sales Engine são produtos vendáveis separados e se integram somente por APIs/eventos versionados. Reaproveitar o app de pedidos, sistema de custos, planilhas e fluxos existentes após inspecionar os repositórios. Primeiro MVP: contatos, consentimento, projeções de pedidos, campanhas em dry-run e relatórios; depois mensageria, recorrência e indicações. SaaS somente após validação real.
 
 **Faça agora:**
 - Inventarie os projetos locais que eu disponibilizar, tecnologias, bancos, APIs, arquivos de configuração e recursos em produção.

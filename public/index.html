@@ -1,11 +1,11 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#17130f" />
     <title>SamJoE CRM</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=7" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -56,9 +56,12 @@
           <button class="nav-item" data-view="contacts"><span>♙</span> Contatos <b id="contactNavCount">0</b></button>
           <button class="nav-item" data-view="products"><span>◇</span> Produtos</button>
           <button class="nav-item" data-view="campaigns"><span>◈</span> Campanhas <b id="campaignNavCount">0</b></button>
+          <button class="nav-item" data-view="queue"><span>⇌</span> Fila</button>
           <button class="nav-item" data-view="results"><span>◉</span> Resultados</button>
+          <button class="nav-item" data-view="publicos"><span>⊡</span> Públicos</button>
           <p class="nav-label">OPERAÇÃO</p>
           <button class="nav-item" data-view="integrations"><span>⚡</span> Integrações</button>
+          <button class="nav-item" data-view="settings"><span>⚙</span> Configurações</button>
         </nav>
         <div class="sidebar-bottom">
           <div class="api-state"><i id="apiDot"></i><div><strong id="apiStateText">Verificando API</strong><small id="apiStateSub">localhost:4010</small></div></div>
@@ -115,14 +118,48 @@
 
           <section class="view" id="campaignsView">
             <div class="section-toolbar"><div><h2>Campanhas</h2><p>Crie e analise o alcance de uma campanha antes de disparar.</p></div><button class="primary-button" data-open="campaign"><span>＋</span> Nova campanha</button></div>
+            <div class="filters campaign-filters" id="campaignFilters">
+              <div class="filter-chips" role="group" aria-label="Filtrar por status">
+                <button class="filter-chip" type="button" data-status="draft">Rascunho</button>
+                <button class="filter-chip" type="button" data-status="preflight_ready">Análise pronta</button>
+                <button class="filter-chip" type="button" data-status="approved">Aprovada</button>
+                <button class="filter-chip" type="button" data-status="sending">Enviando</button>
+                <button class="filter-chip" type="button" data-status="completed">Concluída</button>
+                <button class="filter-chip" type="button" data-status="cancelled">Cancelada</button>
+              </div>
+              <div class="campaign-date-row">
+                <label class="date-range-label">De <input type="date" id="campaignDateFrom" /></label>
+                <label class="date-range-label">Até <input type="date" id="campaignDateTo" /></label>
+                <button class="secondary-button small" id="campaignDateClear" type="button">Limpar Filtros</button>
+              </div>
+            </div>
             <div class="table-panel">
-              <div class="table-wrap"><table><thead><tr><th>Campanha</th><th>Status</th><th>Elegíveis</th><th>Mensagem</th><th>Criada</th><th></th></tr></thead><tbody id="campaignsTableBody"></tbody></table></div>
+              <div class="table-wrap"><table class="campaigns-table"><colgroup><col style="width:160px"><col style="width:100px"><col style="width:68px"><col><col style="width:82px"><col style="width:210px"></colgroup><thead><tr><th>Campanha</th><th style="text-align:center">Status</th><th style="text-align:center">Elegíveis</th><th>Mensagem</th><th style="text-align:center">Criada</th><th></th></tr></thead><tbody id="campaignsTableBody"></tbody></table></div>
               <div class="empty-state is-hidden" id="campaignsEmpty"><span>◈</span><h3>Nenhuma campanha ainda</h3><p>Crie uma campanha para analisar a elegibilidade dos contatos.</p></div>
             </div>
-            <div class="preflight-panel is-hidden" id="preflightPanel">
-              <div class="panel-head"><div><p class="eyebrow">ANÁLISE DE ELEGIBILIDADE</p><h3 id="preflightCampaignName">—</h3></div><button class="icon-button" id="closePreflightButton" title="Fechar análise" aria-label="Fechar análise">×</button></div>
-              <div id="preflightContent"></div>
+          </section>
+
+          <section class="view" id="queueView">
+            <div class="section-toolbar"><div><h2>Fila de disparos</h2><p>Acompanhe o status de envio de todos os destinatários.</p></div><button class="secondary-button" id="queueRefreshBtn">↻ Atualizar</button></div>
+            <div class="filters">
+              <select id="queueStatusFilter" aria-label="Filtrar por status de envio">
+                <option value="">Todos os status</option>
+                <option value="queued">Na fila</option>
+                <option value="sent">Enviado</option>
+                <option value="delivered">Entregue</option>
+                <option value="read">Lido</option>
+                <option value="failed">Falhou</option>
+                <option value="cancelled">Cancelado</option>
+              </select>
+              <select id="queueCampaignFilter" aria-label="Filtrar por campanha">
+                <option value="">Todas as campanhas</option>
+              </select>
             </div>
+            <div class="table-panel">
+              <div class="table-wrap"><table><thead><tr><th>Campanha</th><th>Contato</th><th>Telefone</th><th>Status</th><th>Na fila</th><th>Enviado</th><th>Entregue</th><th>Lido</th></tr></thead><tbody id="queueTableBody"></tbody></table></div>
+              <div class="empty-state is-hidden" id="queueEmpty"><span>⇌</span><h3>Nenhum registro encontrado</h3><p>Os disparos aparecerão aqui após a aprovação de uma campanha.</p></div>
+            </div>
+            <div class="queue-pagination" id="queuePagination"></div>
           </section>
 
           <section class="view" id="resultsView">
@@ -147,21 +184,160 @@
             </div>
           </section>
 
-          <section class="view" id="integrationsView">
-            <div class="section-toolbar"><div><h2>Integrações</h2><p>Acompanhe os componentes da operação local.</p></div></div>
-            <div class="integration-grid">
-              <article class="integration-card"><div class="integration-logo api-logo">API</div><div class="integration-copy"><div><h3>Sales Engine API</h3><span class="status-badge success" id="apiBadge">Verificando</span></div><p>Autenticação, contatos, consentimentos e produtos.</p><code>http://localhost:4010</code></div></article>
-              <article class="integration-card"><div class="integration-logo n8n-logo">n8n</div><div class="integration-copy"><div><h3>Automação n8n</h3><span class="status-badge neutral">Configurada</span></div><p>Fluxos de atendimento e automações do WhatsApp.</p><a href="http://localhost:5679" target="_blank" rel="noreferrer">Abrir n8n ↗</a></div></article>
-              <article class="integration-card"><div class="integration-logo wa-logo">W</div><div class="integration-copy"><div><h3>Evolution API</h3><span class="status-badge neutral">Configurada</span></div><p>Instância local responsável pela conexão com WhatsApp.</p><a href="http://localhost:8081" target="_blank" rel="noreferrer">Abrir Evolution ↗</a></div></article>
-              <article class="integration-card" id="foodappCard"><div class="integration-logo fa-logo">F</div><div class="integration-copy"><div><h3>FoodApp</h3><span class="status-badge neutral" id="foodappBadge">Não configurado</span></div><p>Receba pedidos e sincronize clientes automaticamente.</p><div class="integration-actions"><code id="foodappWebhookUrl">http://localhost:4010/api/v1/integrations/foodapp/events</code><div class="integration-buttons"><button class="secondary-button small" id="copyWebhookBtn" title="Copiar URL do webhook">Copiar URL</button><button class="secondary-button small" id="openFoodappModalBtn">Configurar</button></div></div><small class="integration-last-event is-hidden" id="foodappLastEvent"></small></div></article>
+          <section class="view" id="publicosView">
+            <div class="section-toolbar">
+              <div><h2>Públicos</h2><p>Analise sua base e crie segmentos para campanhas específicas.</p></div>
+              <button class="primary-button" id="newAudienceBtn"><span>＋</span> Novo público</button>
             </div>
-            <article class="roadmap-panel"><p class="eyebrow">ROADMAP DE INTEGRAÇÃO</p><h3>Do WhatsApp ao CRM</h3><div class="roadmap"><div class="roadmap-step done"><b>1</b><span><strong>Infraestrutura</strong><small>PostgreSQL, API e containers</small></span></div><i></i><div class="roadmap-step current"><b>2</b><span><strong>Painel CRM</strong><small>Visualização e cadastros</small></span></div><i></i><div class="roadmap-step"><b>3</b><span><strong>Conversas</strong><small>Eventos do n8n no histórico</small></span></div><i></i><div class="roadmap-step"><b>4</b><span><strong>Campanhas</strong><small>Segmentação e métricas</small></span></div></div></article>
+            <div class="publicos-tabs" role="tablist">
+              <button class="publicos-tab is-active" data-tab="analises" role="tab">Análises</button>
+              <button class="publicos-tab" data-tab="segmentos" role="tab">Segmentos</button>
+            </div>
+
+            <div class="publicos-panel is-active" id="tabAnalises">
+              <div class="analytics-period-row">
+                <span class="eyebrow">PERÍODO</span>
+                <select id="productPeriod">
+                  <option value="30">Últimos 30 dias</option>
+                  <option value="90" selected>Últimos 90 dias</option>
+                  <option value="180">Últimos 6 meses</option>
+                  <option value="365">Último ano</option>
+                </select>
+                <button class="secondary-button small" id="reloadAnalyticsBtn">↻ Atualizar</button>
+              </div>
+
+              <p class="eyebrow" style="margin:24px 0 10px">PRODUTOS MAIS VENDIDOS</p>
+              <div class="table-panel">
+                <div class="table-wrap">
+                  <table id="productAnalyticsTable">
+                    <thead><tr><th>Produto</th><th>Categoria</th><th style="text-align:right">Pedidos</th><th style="text-align:right">Compradores</th><th style="text-align:right">Un. vendidas</th><th style="text-align:right">Receita</th></tr></thead>
+                    <tbody id="productAnalyticsBody"><tr><td colspan="6" class="empty-state">Carregando…</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="analytics-two-col" style="margin-top:28px">
+                <div>
+                  <p class="eyebrow" style="margin:0 0 10px">FREQUÊNCIA DE COMPRA</p>
+                  <div class="freq-buckets" id="freqBuckets"><p class="list-placeholder">Carregando…</p></div>
+                </div>
+                <div>
+                  <p class="eyebrow" style="margin:0 0 10px">SEGMENTOS DE ENGAJAMENTO</p>
+                  <div class="engagement-segments" id="engagementSegments"><p class="list-placeholder">Carregando…</p></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="publicos-panel" id="tabSegmentos">
+              <div class="audiences-list" id="audiencesList"><p class="list-placeholder" style="padding:32px">Carregando públicos…</p></div>
+            </div>
+          </section>
+
+          <section class="view" id="integrationsView">
+            <div class="section-toolbar"><div><h2>Integrações</h2><p>Monitore os canais ativos e configure novas conexões.</p></div></div>
+            <div class="integration-grid">
+
+              <article class="integration-card">
+                <div class="intg-head">
+                  <div class="integration-logo wa-logo">W</div>
+                  <div class="intg-meta"><h3>WhatsApp</h3><span class="status-badge neutral" id="waBadge">Verificando…</span></div>
+                </div>
+                <p>Canal principal para envio de campanhas e atendimento aos clientes via mensagem.</p>
+                <div class="intg-foot">
+                  <span class="intg-health"><span class="health-dot" id="waHealthDot"></span><span id="waHealthText">Aguardando</span></span>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <button class="secondary-button small is-hidden" id="waDisconnectBtn" style="color:var(--danger)">Desconectar</button>
+                    <button class="secondary-button small" id="waConfigBtn">Conectar</button>
+                  </div>
+                </div>
+              </article>
+
+              <article class="integration-card">
+                <div class="intg-head">
+                  <div class="integration-logo n8n-logo">↺</div>
+                  <div class="intg-meta"><h3>Respostas em Tempo Real</h3><span class="status-badge neutral" id="n8nBadge">Verificando…</span></div>
+                </div>
+                <p>Atendimento automático para clientes. Configure como o sistema responde mensagens recebidas.</p>
+                <div class="intg-foot">
+                  <span class="intg-health"><span class="health-dot" id="n8nHealthDot"></span><span id="n8nHealthText">Aguardando</span></span>
+                  <button class="secondary-button small" id="n8nConfigBtn">Configurar</button>
+                </div>
+              </article>
+
+              <article class="integration-card">
+                <div class="intg-head">
+                  <div class="integration-logo api-logo">API</div>
+                  <div class="intg-meta"><h3>Sales Engine</h3><span class="status-badge success" id="apiBadge">Verificando…</span></div>
+                </div>
+                <p>Núcleo do sistema. Processa contatos, campanhas, consentimentos e métricas em tempo real.</p>
+                <div class="intg-foot">
+                  <span class="intg-health" style="font-family:monospace;font-size:10px">localhost:4010</span>
+                </div>
+              </article>
+
+              <article class="integration-card" id="samjoeFoodCard">
+                <div class="intg-head">
+                  <div class="integration-logo fa-logo">F</div>
+                  <div class="intg-meta"><h3>SamJoE Food</h3><span class="status-badge neutral" id="samjoeFoodBadge">Não configurado</span></div>
+                </div>
+                <p>Receba pedidos e sincronize clientes automaticamente com o sistema de delivery.</p>
+                <div id="samjoeFoodDetectBanner" class="intg-detect-banner is-hidden">
+                  <span>Loja detectada em <strong id="samjoeFoodDetectedUrl"></strong></span>
+                  <button class="primary-button small" id="samjoeFoodAutoConnectBtn">Conectar agora</button>
+                </div>
+                <div class="intg-foot">
+                  <span class="intg-health"><span class="health-dot" id="samjoeFoodHealthDot"></span><small class="integration-last-event is-hidden" id="samjoeFoodLastEvent"></small></span>
+                  <button class="secondary-button small" id="openSamJoeFoodModalBtn">Configurar</button>
+                </div>
+              </article>
+
+            </div>
+            <article class="roadmap-panel"><p class="eyebrow">ONDE ESTAMOS</p><h3>Mapa do produto</h3><div class="roadmap"><div class="roadmap-step done"><b>1</b><span><strong>Infraestrutura</strong><small>API, banco e containers</small></span></div><i></i><div class="roadmap-step done"><b>2</b><span><strong>Campanhas e CRM</strong><small>Contatos, segmentação e métricas</small></span></div><i></i><div class="roadmap-step current"><b>3</b><span><strong>Automação</strong><small>WhatsApp e respostas em tempo real</small></span></div><i></i><div class="roadmap-step"><b>4</b><span><strong>Inteligência</strong><small>Histórico e atribuição avançada</small></span></div></div></article>
+          </section>
+
+          <section class="view" id="settingsView">
+            <div class="section-toolbar"><div><h2>Configurações</h2><p>Personalização do tenant e variáveis de campanha.</p></div></div>
+            <div class="settings-grid">
+              <article class="settings-card">
+                <h3>Identidade do tenant</h3>
+                <form id="settingsForm">
+                  <div class="form-grid">
+                    <label class="full">Nome do negócio
+                      <input name="tenantName" id="settingsTenantName" placeholder="Ex.: SamJoE Confeitaria" required minlength="2" />
+                    </label>
+                    <label class="full">URL do app de pedidos
+                      <input name="appUrl" id="settingsAppUrl" type="url" placeholder="https://app.confeitaria.samjoe.com.br" />
+                      <small>Use <code>{{app_url}}</code> nas mensagens de campanha. O link recebe o <code>?ref=</code> automaticamente.</small>
+                    </label>
+                  </div>
+                  <div class="modal-actions" style="padding:0;margin-top:16px;">
+                    <button class="primary-button" type="submit" id="settingsSaveBtn">Salvar configurações</button>
+                  </div>
+                  <p class="form-error" data-form-error id="settingsError"></p>
+                </form>
+              </article>
+              <article class="settings-card settings-card--info">
+                <h3>Variáveis disponíveis nas mensagens</h3>
+                <table class="settings-vars-table">
+                  <thead><tr><th>Variável</th><th>Substituído por</th></tr></thead>
+                  <tbody>
+                    <tr><td><code>{{app_url}}</code></td><td id="varAppUrlPreview"><em>—</em></td></tr>
+                  </tbody>
+                </table>
+                <p style="margin-top:12px;font-size:13px;color:var(--text-secondary);">O <code>?ref=XXXXXXXX</code> é injetado automaticamente em qualquer URL da mensagem no momento do disparo.</p>
+              </article>
+            </div>
           </section>
         </div>
       </main>
     </div>
 
     <div class="modal-backdrop is-hidden" id="modalBackdrop">
+      <section class="modal modal--wide" id="preflightModal" role="dialog" aria-modal="true" aria-labelledby="preflightModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">ANÁLISE DE ELEGIBILIDADE</p><h2 id="preflightModalTitle">—</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
+        <div id="preflightContent" class="preflight-scroll"></div>
+      </section>
+
       <section class="modal" id="contactModal" role="dialog" aria-modal="true" aria-labelledby="contactModalTitle">
         <div class="modal-head"><div><p class="eyebrow">NOVO REGISTRO</p><h2 id="contactModalTitle">Adicionar contato</h2></div><button class="icon-button" data-close aria-label="Fechar">×</button></div>
         <form id="contactForm">
@@ -181,16 +357,78 @@
           <div class="form-grid">
             <label class="full">Nome da campanha<input name="name" placeholder="Promoção de aniversário" required minlength="2" maxlength="180" /></label>
             <label class="full">Objetivo (opcional)<input name="objective" placeholder="Reativar clientes inativos do mês" maxlength="500" /></label>
-            <label class="full">Mensagem <small>máx. 4000 caracteres</small><textarea name="messageText" rows="4" placeholder="Oi! Temos algo especial para você..." required maxlength="4000"></textarea></label>
+            <label class="full">Mensagem <small>use <code>{{app_url}}</code> para o link do app · máx. 4000 chars</small><textarea name="messageText" rows="4" placeholder="Oi! Temos algo especial para você. Acesse: {{app_url}}" required maxlength="4000"></textarea></label>
+            <label class="full">Mídia (opcional)
+              <div class="asset-upload-area" id="assetUploadArea">
+                <input type="file" id="assetFileInput" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime" class="asset-file-hidden" />
+                <div class="asset-placeholder" id="assetPlaceholder">
+                  <span class="asset-placeholder-icon">⊕</span>
+                  <span>Clique para anexar imagem ou vídeo</span>
+                  <small>JPEG, PNG, WebP, GIF, MP4 · máx. 50 MB</small>
+                </div>
+                <div class="asset-preview is-hidden" id="assetPreview">
+                  <img id="assetThumb" src="" alt="" class="asset-thumb" />
+                  <div class="asset-preview-info">
+                    <span id="assetFileName"></span>
+                    <button type="button" class="asset-remove" id="assetRemoveBtn">✕ Remover</button>
+                  </div>
+                </div>
+                <input type="hidden" name="assetUrl" id="assetUrl" />
+                <input type="hidden" name="assetType" id="assetType" />
+              </div>
+              <small id="assetHint" class="asset-hint is-hidden">A mensagem vira legenda da mídia no WhatsApp.</small>
+            </label>
             <label class="full">Link (opcional)<input name="linkUrl" type="url" placeholder="https://..." /></label>
-            <label>Intervalo mínimo entre envios<select name="minIntervalHours"><option value="24">24 horas</option><option value="48">2 dias</option><option value="72">3 dias</option><option value="168" selected>7 dias</option><option value="336">14 dias</option><option value="720">30 dias</option></select></label>
-            <label>Máximo em 30 dias<select name="maxNotificationsPer30d"><option value="1">1 mensagem</option><option value="2">2 mensagens</option><option value="3">3 mensagens</option><option value="4" selected>4 mensagens</option><option value="6">6 mensagens</option><option value="8">8 mensagens</option></select></label>
-            <label class="full"><span class="checkbox-row"><input name="includeConverted" type="checkbox" checked />Incluir contatos que já compraram</span></label>
+            <label class="full">Tipo de disparo
+              <select name="dispatchMode" id="dispatchModeSelect">
+                <option value="standard">Padrão — respeita intervalo e frequência</option>
+                <option value="single">Disparo único — envia uma vez, sem restrição de intervalo</option>
+              </select>
+              <small id="dispatchModeHint" class="is-hidden" style="color:var(--accent)">Disparo único: cada contato elegível recebe a mensagem uma única vez. Intervalo e frequência são ignorados; contatos convertidos são excluídos por padrão.</small>
+            </label>
+            <div id="campaignFreqFields">
+              <div class="form-grid" style="grid-column:1/-1">
+                <label>Intervalo mínimo entre envios<select name="minIntervalHours"><option value="24">24 horas</option><option value="48">2 dias</option><option value="72">3 dias</option><option value="168" selected>7 dias</option><option value="336">14 dias</option><option value="720">30 dias</option></select></label>
+                <label>Máximo em 30 dias<select name="maxNotificationsPer30d"><option value="1">1 mensagem</option><option value="2">2 mensagens</option><option value="3">3 mensagens</option><option value="4" selected>4 mensagens</option><option value="6">6 mensagens</option><option value="8">8 mensagens</option></select></label>
+                <label class="full"><span class="checkbox-row"><input name="includeConverted" type="checkbox" checked />Incluir contatos que já compraram</span></label>
+              </div>
+            </div>
             <label class="full">Etapas do público <small>vazio = todas | ex.: prospect, interested</small><input name="audienceStages" placeholder="prospect, interested, repeat_buyer" /></label>
             <label class="full">Origens do público <small>vazio = todas | ex.: whatsapp, instagram</small><input name="audienceOrigins" placeholder="whatsapp, instagram, manual" /></label>
             <label class="full">Tags necessárias <small>qualquer uma das listadas</small><input name="audienceTags" placeholder="vip, atacado, bolo no pote" /></label>
           </div>
           <div class="modal-actions"><button class="secondary-button" type="button" data-close>Cancelar</button><button class="primary-button" type="submit">Criar campanha</button></div>
+          <p class="form-error" data-form-error></p>
+        </form>
+      </section>
+
+      <section class="modal modal--wide" id="audienceModal" role="dialog" aria-modal="true" aria-labelledby="audienceModalTitle">
+        <div class="modal-head"><div><p class="eyebrow" id="audienceModalEyebrow">NOVO PÚBLICO</p><h2 id="audienceModalTitle">Criar público</h2></div><button class="icon-button" id="closeAudienceModalBtn" aria-label="Fechar">×</button></div>
+        <form id="audienceForm">
+          <div class="form-grid">
+            <label class="full">Nome do público<input name="name" placeholder="Ex.: Clientes recorrentes de doces" required minlength="2" maxlength="180" /></label>
+            <label class="full">Descrição (opcional)<input name="description" placeholder="Quem comprou 2+ vezes nos últimos 90 dias" maxlength="500" /></label>
+          </div>
+          <p class="eyebrow" style="margin:18px 0 10px">REGRAS DE SEGMENTAÇÃO</p>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px">Deixe em branco para não aplicar o filtro. As regras se somam (AND).</p>
+          <div class="audience-rules-grid">
+            <label>Etapas (vazio = todas)<input name="ruleStages" placeholder="prospect, repeat_buyer, customer" /></label>
+            <label>Origens (vazio = todas)<input name="ruleOrigins" placeholder="whatsapp, foodapp, manual" /></label>
+            <label>Tags (qualquer uma)<input name="ruleTags" placeholder="vip, bolo no pote, atacado" /></label>
+            <label>Produtos comprados (IDs ou SKUs)<input name="ruleProductIds" id="ruleProductIds" placeholder="Selecione abaixo ou cole IDs" /></label>
+            <label>Frequência mínima<div class="inline-row"><input name="ruleFreqMin" type="number" min="1" max="999" placeholder="2" style="width:70px" /><span>pedidos nos últimos</span><input name="ruleFreqDays" type="number" min="1" max="365" placeholder="90" style="width:70px" /><span>dias</span></div></label>
+            <label>Comprou nos últimos N dias<input name="ruleLastPurchaseDays" type="number" min="1" max="730" placeholder="60" /></label>
+            <label>Inativo há mais de N dias<input name="ruleLapsedDays" type="number" min="1" max="730" placeholder="60" /></label>
+            <label>Engajou com campanha nos últimos N dias<input name="ruleCampaignEngagedDays" type="number" min="1" max="365" placeholder="90" /></label>
+            <label>Nunca engajou nos últimos N dias<input name="ruleNotEngagedDays" type="number" min="1" max="365" placeholder="365" /></label>
+          </div>
+          <div class="audience-product-picker" id="audienceProductPicker"></div>
+          <div class="modal-actions">
+            <button class="secondary-button" type="button" id="cancelAudienceBtn">Cancelar</button>
+            <button class="secondary-button" type="button" id="evaluateAudienceBtn" style="display:none">Avaliar público</button>
+            <button class="primary-button" type="submit" id="saveAudienceBtn">Criar público</button>
+          </div>
+          <div id="audienceEvalResult" class="audience-eval-result is-hidden"></div>
           <p class="form-error" data-form-error></p>
         </form>
       </section>
@@ -201,20 +439,126 @@
       </section>
     </div>
 
-    <div class="modal-backdrop is-hidden" id="foodappModalBackdrop">
-      <section class="modal" id="foodappModal" role="dialog" aria-modal="true" aria-labelledby="foodappModalTitle">
-        <div class="modal-head"><div><p class="eyebrow">INTEGRAÇÃO</p><h2 id="foodappModalTitle">Configurar FoodApp</h2></div><button class="icon-button" data-close-foodapp aria-label="Fechar">×</button></div>
-        <form id="foodappForm">
-          <p class="form-note">O FoodApp enviará eventos para o webhook abaixo assinados com a chave HMAC configurada aqui.</p>
+    <div class="modal-backdrop is-hidden" id="samjoeFoodModalBackdrop">
+      <section class="modal" id="samjoeFoodModal" role="dialog" aria-modal="true" aria-labelledby="samjoeFoodModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">INTEGRAÇÃO</p><h2 id="samjoeFoodModalTitle">Configurar SamJoE Food</h2></div><button class="icon-button" data-close-samjoe-food aria-label="Fechar">×</button></div>
+        <form id="samjoeFoodForm">
+          <p class="form-note">O SamJoE Food enviará eventos para o webhook abaixo assinados com a chave HMAC configurada aqui.</p>
           <label>Chave HMAC <small>(mínimo 8 caracteres — deixe em branco para manter a atual)</small><input name="hmacSecret" type="password" autocomplete="new-password" placeholder="••••••••••••••••" maxlength="512" /></label>
           <label>Status<select name="status"><option value="active">Ativo</option><option value="disabled">Desativado</option></select></label>
-          <div class="modal-actions"><button class="secondary-button" type="button" data-close-foodapp>Cancelar</button><button class="primary-button" type="submit">Salvar</button></div>
+          <div class="modal-actions"><button class="secondary-button" type="button" data-close-samjoe-food>Cancelar</button><button class="primary-button" type="submit">Salvar</button></div>
           <p class="form-error" data-form-error></p>
         </form>
       </section>
     </div>
 
+    <!-- SamJoE Food Auto-Connect modal -->
+    <div class="modal-backdrop is-hidden" id="foodConnectModalBackdrop">
+      <section class="modal compact" id="foodConnectModal" role="dialog" aria-modal="true" aria-labelledby="foodConnectModalTitle">
+        <div class="modal-head">
+          <div><p class="eyebrow">SAMJOE FOOD</p><h2 id="foodConnectModalTitle">Conectar loja</h2></div>
+          <button class="icon-button" id="closeFoodConnectModalBtn" aria-label="Fechar">×</button>
+        </div>
+
+        <div id="foodConnectStepForm">
+          <p class="form-note">Informe o endereço da loja para conectar automaticamente. Pedidos e clientes serão sincronizados em tempo real.</p>
+          <label style="display:block;margin:12px 0 6px">URL da loja SamJoE Food<input id="foodAppUrlInput" type="url" placeholder="http://localhost:3000" style="margin-top:4px" /></label>
+          <p class="form-error is-hidden" id="foodConnectError"></p>
+          <div class="modal-actions">
+            <button class="secondary-button" type="button" id="cancelFoodConnectBtn">Cancelar</button>
+            <button class="primary-button" id="doFoodConnectBtn">Conectar</button>
+          </div>
+        </div>
+
+        <div id="foodConnectStepSuccess" class="is-hidden" style="text-align:center;padding:8px 0 16px">
+          <div class="connect-success-icon">✓</div>
+          <h3 style="margin:12px 0 6px">Loja conectada!</h3>
+          <p class="form-note" id="foodConnectSuccessNote">Pedidos serão recebidos automaticamente.</p>
+          <div id="foodConnectManualConfig" class="is-hidden" style="text-align:left;background:var(--surface-raised);border-radius:8px;padding:14px;margin:12px 0">
+            <p style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text-secondary)">CONFIGURE MANUALMENTE NO PAINEL DA LOJA:</p>
+            <label style="font-size:12px;display:block;margin-bottom:6px">URL do Webhook
+              <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+                <input id="foodWebhookUrlDisplay" readonly style="font-size:11px;font-family:monospace;flex:1" />
+                <button class="secondary-button small" id="copyWebhookUrlBtn">Copiar</button>
+              </div>
+            </label>
+            <label style="font-size:12px;display:block">Chave HMAC
+              <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+                <input id="foodHmacDisplay" readonly style="font-size:11px;font-family:monospace;flex:1" />
+                <button class="secondary-button small" id="copyHmacBtn">Copiar</button>
+              </div>
+            </label>
+          </div>
+          <div class="modal-actions" style="justify-content:center;margin-top:16px">
+            <button class="primary-button" id="closeFoodConnectSuccessBtn">Fechar</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop is-hidden" id="waModalBackdrop">
+      <section class="modal compact" id="waModal" role="dialog" aria-modal="true" aria-labelledby="waModalTitle">
+        <div class="modal-head">
+          <div><p class="eyebrow">WHATSAPP</p><h2 id="waModalTitle">Conectar WhatsApp</h2></div>
+          <button class="icon-button" data-close-wa aria-label="Fechar">×</button>
+        </div>
+
+        <!-- Estado: carregando QR -->
+        <div id="waStepLoading">
+          <p class="form-note" style="text-align:center;margin-bottom:24px">Preparando a conexão…</p>
+          <div class="qr-spinner"></div>
+        </div>
+
+        <!-- Estado: QR code disponível -->
+        <div id="waStepQr" class="is-hidden">
+          <p class="form-note" style="text-align:center">Abra o WhatsApp no celular → <strong>Configurações → Aparelhos conectados → Conectar aparelho</strong> e escaneie:</p>
+          <div class="qr-container">
+            <img id="waQrImage" src="" alt="QR Code" />
+          </div>
+          <p class="qr-hint" id="waQrHint">Aguardando leitura…</p>
+          <button class="text-button qr-advanced-toggle" id="waAdvancedToggle" type="button">⚙ Configurações avançadas</button>
+          <div id="waAdvancedConfig" class="is-hidden" style="margin-top:12px">
+            <label style="display:block;margin-bottom:8px">URL Evolution API<input id="waApiUrlInput" type="url" placeholder="http://localhost:8081" style="margin-top:4px" /></label>
+            <label style="display:block;margin-bottom:8px">Nome da instância<input id="waInstanceInput" placeholder="samjoe" style="margin-top:4px" /></label>
+            <div class="modal-actions" style="padding:0;margin-top:8px">
+              <button class="primary-button small" id="saveWaConfigBtn">Salvar e reconectar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Estado: conectado -->
+        <div id="waStepConnected" class="is-hidden" style="text-align:center;padding:8px 0 16px">
+          <div class="connect-success-icon">✓</div>
+          <h3 style="margin:12px 0 6px">WhatsApp conectado!</h3>
+          <p class="form-note">Você já pode disparar campanhas por WhatsApp.</p>
+          <div class="modal-actions" style="justify-content:center;margin-top:20px">
+            <button class="primary-button" data-close-wa>Fechar</button>
+          </div>
+        </div>
+
+        <!-- Estado: erro -->
+        <div id="waStepError" class="is-hidden">
+          <p class="form-error" id="waError" style="margin-bottom:16px"></p>
+          <label style="display:block;margin-bottom:8px">URL Evolution API<input id="waApiUrlInputErr" type="url" placeholder="http://localhost:8081" style="margin-top:4px" /></label>
+          <label style="display:block;margin-bottom:8px">Nome da instância<input id="waInstanceInputErr" placeholder="samjoe" style="margin-top:4px" /></label>
+          <div class="modal-actions">
+            <button class="secondary-button" type="button" data-close-wa>Cancelar</button>
+            <button class="primary-button" id="waTryAgainBtn">Tentar novamente</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop is-hidden" id="n8nModalBackdrop">
+      <section class="modal compact" id="n8nModal" role="dialog" aria-modal="true" aria-labelledby="n8nModalTitle">
+        <div class="modal-head"><div><p class="eyebrow">INTEGRAÇÃO</p><h2 id="n8nModalTitle">Respostas em Tempo Real</h2></div><button class="icon-button" data-close-n8n aria-label="Fechar">×</button></div>
+        <p class="form-note">Configure o endereço do motor de automações. Os fluxos de atendimento ficam encapsulados — nenhuma configuração técnica adicional é necessária aqui.</p>
+        <label>URL do motor <small>padrão: http://localhost:5679</small><input id="n8nApiUrlInput" type="url" placeholder="http://localhost:5679" /></label>
+        <div class="modal-actions"><button class="secondary-button" type="button" data-close-n8n>Cancelar</button><button class="primary-button" id="saveN8nConfigBtn">Salvar e verificar</button></div>
+      </section>
+    </div>
+
     <div class="toast-region" id="toastRegion" aria-live="polite"></div>
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=7" defer></script>
   </body>
 </html>

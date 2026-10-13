@@ -1,8 +1,8 @@
-# Changelog
+﻿# Changelog
 
 ## 0.1.0 — 2026-10-10
 
-- Inventário do FoodApp, legado, custos, localização, n8n e Evolution.
+- Inventário do SamJoE Food, legado, custos, localização, n8n e Evolution.
 - Arquitetura de dois produtos e bancos independentes.
 - Fundação Fastify/TypeScript/PostgreSQL.
 - Migration inicial de tenants, usuários, memberships, contatos, consentimentos, produtos e auditoria.

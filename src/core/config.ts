@@ -8,6 +8,7 @@ export type AppConfig = {
   databaseUrl: string;
   jwtSecret: string;
   jwtExpiresIn: string;
+  serviceKey: string | undefined;
 };
 
 function required(name: string, value: string | undefined): string {
@@ -32,6 +33,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: required('DATABASE_URL', env.DATABASE_URL),
     jwtSecret,
     jwtExpiresIn: env.JWT_EXPIRES_IN ?? '8h',
+    serviceKey: env.SAMJOE_TECH_SERVICE_KEY || undefined,
   };
 }
 

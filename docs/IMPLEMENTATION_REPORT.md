@@ -1,4 +1,4 @@
-# Relatório — Checkpoints 0 e 1
+﻿# Relatório — Checkpoints 0 e 1
 
 ## Checkpoint concluído
 
@@ -45,7 +45,7 @@ O app pode ser iniciado após PostgreSQL, migration e seed. O endpoint público 
 
 - Nenhum WhatsApp enviado.
 - Nenhuma cobrança processada.
-- Nenhum arquivo do FoodApp legado alterado.
+- Nenhum arquivo do SamJoE Food legado alterado.
 - Nenhuma planilha ou dado pessoal importado.
 - Nenhum segredo real incluído.
 
@@ -54,7 +54,7 @@ O app pode ser iniciado após PostgreSQL, migration e seed. O endpoint público 
 - Painel Next.js ainda não pertence ao Checkpoint 1 implementado.
 - PostgreSQL real precisa ser validado quando o Docker estiver disponível.
 - OpenAPI, refresh token e recuperação de senha ainda não foram implementados.
-- Integrações FoodApp, custos e n8n permanecem somente documentadas.
+- Integrações SamJoE Food, custos e n8n permanecem somente documentadas.
 
 ## Próximo checkpoint
 

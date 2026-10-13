@@ -1,4 +1,4 @@
-# Tarefa 002 — Campanhas, elegibilidade, notificações e conversões
+﻿# Tarefa 002 — Campanhas, elegibilidade, notificações e conversões
 
 Status: **em andamento**  
 Prioridade: **alta**  
@@ -6,7 +6,7 @@ Dependências: Checkpoint 1 (autenticação, contatos, consentimentos e produtos
 
 ## Objetivo
 
-Permitir criar campanhas de WhatsApp, analisar previamente quem pode recebê-las, aprovar um público congelado e registrar todo o ciclo de envio. As conversões poderão ser importadas opcionalmente do SamJoE FoodApp por uma API desacoplada.
+Permitir criar campanhas de WhatsApp, analisar previamente quem pode recebê-las, aprovar um público congelado e registrar todo o ciclo de envio. As conversões poderão ser importadas opcionalmente do SamJoE SamJoE Food por uma API desacoplada.
 
 O envio real só poderá ser habilitado depois que elegibilidade, relatório pré-disparo, idempotência e auditoria estiverem cobertos por testes.
 
@@ -17,7 +17,7 @@ O envio real só poderá ser habilitado depois que elegibilidade, relatório pr�
 - Recebimento será contabilizado por destinatário/campanha, evitando contagem dupla entre eventos `delivered` e `read`.
 - O público é congelado antes da aprovação. Mudanças no conteúdo ou nas regras invalidam o relatório anterior.
 - Imagens e vídeos ficam em armazenamento de objetos; o banco guarda URL e metadados.
-- A integração com o FoodApp é opcional e ocorre somente por API autenticada e idempotente.
+- A integração com o SamJoE Food é opcional e ocorre somente por API autenticada e idempotente.
 - Sem integração de vendas, o dashboard exibirá “conversões indisponíveis”, nunca uma taxa enganosa de 0%.
 - A atribuição inicial será last-touch: última campanha recebida antes da compra, dentro da janela configurada.
 
@@ -80,9 +80,9 @@ O preflight deve retornar:
 - [ ] Atualizar `last_outbound_at` e `next_eligible_at` apenas no estado aceito.
 - [ ] Implementar retry sem duplicar mensagens.
 
-### Fase 4 — FoodApp e conversões
+### Fase 4 — SamJoE Food e conversões
 
-- [ ] Publicar contrato versionado de eventos do FoodApp.
+- [ ] Publicar contrato versionado de eventos do SamJoE Food.
 - [ ] Autenticar chamadas com chave e assinatura HMAC.
 - [ ] Aceitar `customer.created`, `customer.updated`, `order.created`, `order.paid`, `order.cancelled` e `order.refunded`.
 - [ ] Deduplicar por `external_event_id`.
@@ -116,7 +116,7 @@ O preflight deve retornar:
 
 - Isolamento obrigatório por `tenant_id` em todas as consultas.
 - Auditoria em criação, alteração, análise, aprovação, cancelamento e disparo.
-- Idempotência tanto no envio quanto nos eventos do FoodApp.
+- Idempotência tanto no envio quanto nos eventos do SamJoE Food.
 - Segredos nunca ficam no HTML, logs ou banco em texto puro.
 - Dados pessoais devem ser mascarados em logs e relatórios exportados.
 - Campanhas aprovadas não podem ter público ou conteúdo alterado.

@@ -1,4 +1,4 @@
-# Plano de implementação — SamJoE Sales Engine
+﻿# Plano de implementação — SamJoE Sales Engine
 
 **Fonte da verdade:** `SPEC_SAMJOE_SALES_ENGINE_v1.0.md`. Este plano orienta a implementação; em conflitos, sinalizar ao responsável em vez de improvisar.
 
@@ -12,7 +12,7 @@ Para cada tarefa: inventariar dependências → implementar o menor incremento �
 - [ ] Localizar app de pedidos, Apps Script/Sheets, sistema de custos e n8n/Evolution.
 - [ ] Mapear fontes da verdade e formatos de pedido, produto, custo e cliente.
 - [ ] Identificar como testar sem dados reais.
-- [ ] Confirmar banco PostgreSQL próprio do Sales Engine, separado dos bancos do FoodApp, n8n e Evolution.
+- [ ] Confirmar banco PostgreSQL próprio do Sales Engine, separado dos bancos do SamJoE Food, n8n e Evolution.
 - [ ] Confirmar destino do backend Node.js/Fastify na VPS e publicação por Cloudflare Tunnel; Pages não substitui a API.
 - [ ] Entregar `docs/INVENTARIO.md`, `docs/GAPS.md`, `docs/ARCHITECTURE.md`.
 

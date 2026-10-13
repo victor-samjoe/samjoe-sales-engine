@@ -1,8 +1,8 @@
-# SamJoE Sales Engine
+﻿# SamJoE Sales Engine
 
 Produto independente de CRM, consentimento, campanhas, recorrência, indicações e inteligência comercial da SamJoE.
 
-O Sales Engine será usado inicialmente pela SamJoE Confeitaria, mas terá repositório, banco, deploy e contrato comercial próprios. O FoodApp permanece responsável por catálogo, checkout, pedidos, pagamentos e entregas.
+O Sales Engine será usado inicialmente pela SamJoE Confeitaria, mas terá repositório, banco, deploy e contrato comercial próprios. O SamJoE Food permanece responsável por catálogo, checkout, pedidos, pagamentos e entregas.
 
 ## Documentos
 
@@ -23,11 +23,11 @@ O Sales Engine será usado inicialmente pela SamJoE Confeitaria, mas terá repos
 
 Python pode ser usado em serviços especializados de IA, previsão, análise ou otimização, integrados por contrato versionado. Ele não faz parte obrigatória do núcleo do CRM.
 
-## Integração com o FoodApp
+## Integração com o SamJoE Food
 
 ```text
-FoodApp -- eventos de pedidos --> Sales Engine
-Sales Engine -- consulta contratada --> FoodApp
+SamJoE Food -- eventos de pedidos --> Sales Engine
+Sales Engine -- consulta contratada --> SamJoE Food
 Sales Engine -- solicitação assinada --> n8n --> WhatsApp
 Sistema de custos -- snapshot por SKU --> Sales Engine
 ```
@@ -57,4 +57,4 @@ npm test
 npm run build
 ```
 
-O Checkpoint 1 não possui envio de WhatsApp, cobrança externa nem escrita no FoodApp. Todos os testes usam dados fictícios.
+O Checkpoint 1 não possui envio de WhatsApp, cobrança externa nem escrita no SamJoE Food. Todos os testes usam dados fictícios.

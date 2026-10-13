@@ -1,11 +1,11 @@
-# Modelo de dados — Checkpoint 1
+﻿# Modelo de dados — Checkpoint 1
 
 - `tenants`: empresa, slug, timezone e estado.
 - `users`: identidade administrativa e hash de senha.
 - `memberships`: associação de usuário ao tenant com papel.
 - `contacts`: cadastro CRM, telefone E.164, estágio e bloqueio de contato.
 - `consent_events`: concessões e revogações imutáveis por canal/finalidade.
-- `products`: projeção comercial mínima por SKU; não substitui o catálogo do FoodApp.
+- `products`: projeção comercial mínima por SKU; não substitui o catálogo do SamJoE Food.
 - `audit_logs`: trilha de alterações administrativas.
 - `schema_migrations`: controle das migrations SQL.
 
