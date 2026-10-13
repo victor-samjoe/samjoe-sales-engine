@@ -98,29 +98,19 @@ export async function createCampaign(db: Database, tenantId: string, userId: str
 }
 
 export async function listCampaigns(db: Database, tenantId: string) {
-  const campaigns = await db.query(
+  const result = await db.query(
     `SELECT c.id, c.name, c.objective, c.message_text, c.link_url, c.status,
             c.audience_rules_json, c.min_interval_hours, c.max_notifications_per_30d,
             c.include_converted, c.conversion_window_days, c.snapshot_hash,
-            c.snapshot_created_at, c.created_at, c.updated_at
+            c.snapshot_created_at, c.created_at, c.updated_at,
+            (SELECT count(*) FROM campaign_assets a WHERE a.campaign_id = c.id AND a.tenant_id = c.tenant_id)::int AS asset_count,
+            (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.tenant_id = c.tenant_id AND r.eligible = true)::int AS eligible_count
        FROM campaigns c
       WHERE c.tenant_id = $1
       ORDER BY c.created_at DESC`,
     [tenantId],
   );
-  const rows = [];
-  for (const campaign of campaigns.rows as Array<Record<string, unknown> & { id: string }>) {
-    const [assets, recipients] = await Promise.all([
-      db.query<{ count: string | number }>('SELECT count(*) AS count FROM campaign_assets WHERE campaign_id = $1 AND tenant_id = $2', [campaign.id, tenantId]),
-      db.query<{ count: string | number }>('SELECT count(*) AS count FROM campaign_recipients WHERE campaign_id = $1 AND tenant_id = $2 AND eligible = true', [campaign.id, tenantId]),
-    ]);
-    rows.push({
-      ...campaign,
-      asset_count: Number(assets.rows[0]?.count ?? 0),
-      eligible_count: Number(recipients.rows[0]?.count ?? 0),
-    });
-  }
-  return { rows, rowCount: campaigns.rowCount };
+  return { rows: result.rows, rowCount: result.rowCount };
 }
 
 export async function getCampaign(db: Database, tenantId: string, campaignId: string) {

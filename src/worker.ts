@@ -64,7 +64,12 @@ type AppEnv = {
 
 let _pool: pg.Pool | null = null;
 function getPool(env: Env): pg.Pool {
-  if (!_pool) _pool = new pg.Pool({ connectionString: env.HYPERDRIVE.connectionString });
+  if (!_pool) _pool = new pg.Pool({
+    connectionString: env.HYPERDRIVE.connectionString,
+    max: 5,
+    connectionTimeoutMillis: 8000,
+    idleTimeoutMillis: 20000,
+  });
   return _pool;
 }
 
