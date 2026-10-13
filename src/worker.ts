@@ -64,23 +64,6 @@ type AppEnv = {
 // Pool — lazily created, cached for the lifetime of the Worker instance
 // ---------------------------------------------------------------------------
 
-let _pool: pg.Pool | null = null;
-function getPool(env: Env): pg.Pool {
-  if (!_pool) {
-    _pool = new pg.Pool({
-      connectionString: env.HYPERDRIVE.connectionString,
-      max: 10,
-      connectionTimeoutMillis: 20000,
-      idleTimeoutMillis: 30000,
-      query_timeout: 20000,
-    });
-    _pool.on('error', (err) => {
-      console.error('Pool error, resetting:', err.message);
-      _pool = null;
-    });
-  }
-  return _pool;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,10 +99,19 @@ function verifyHmac(secret: string, rawBody: string, signature: string): boolean
 
 const app = new Hono<AppEnv>();
 
-// Inject db
+// Inject db — one client per request; Hyperdrive handles pooling on its side
 app.use('*', async (c, next) => {
-  c.set('db', getPool(c.env) as unknown as Database);
-  await next();
+  const client = new pg.Client({
+    connectionString: c.env.HYPERDRIVE.connectionString,
+    query_timeout: 20000,
+  });
+  await client.connect();
+  c.set('db', client as unknown as Database);
+  try {
+    await next();
+  } finally {
+    client.end().catch(() => {});
+  }
 });
 
 // Global error handler
@@ -232,8 +224,7 @@ app.post('/api/v1/auth/activate', async (c) => {
   if (row.used_at) return c.json({ error: { code: 'TOKEN_USED', message: 'Token já utilizado' } }, 410);
   if (new Date(row.expires_at) < new Date()) return c.json({ error: { code: 'TOKEN_EXPIRED', message: 'Token expirado' } }, 410);
   const passwordHash = await bcrypt.hash(body.password, 12);
-  const pool = db as unknown as pg.Pool;
-  const client = await pool.connect();
+  const client = db as unknown as pg.Client;
   try {
     await client.query('BEGIN');
     const markUsed = await client.query(`UPDATE invite_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL RETURNING id`, [row.id]);
@@ -246,8 +237,6 @@ app.post('/api/v1/auth/activate', async (c) => {
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
-  } finally {
-    client.release();
   }
   return c.json({ ok: true, message: 'Conta ativada com sucesso' });
 });
@@ -276,8 +265,7 @@ app.post('/api/internal/tenants', requireServiceKey, async (c) => {
   const rawToken = randomBytes(32).toString('hex');
   const tokenHash = createHash('sha256').update(rawToken).digest('hex');
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
-  const pool = db as unknown as pg.Pool;
-  const client = await pool.connect();
+  const client = db as unknown as pg.Client;
   let resolvedUserId: string;
   let needsActivation: boolean;
   try {
@@ -303,8 +291,6 @@ app.post('/api/internal/tenants', requireServiceKey, async (c) => {
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
-  } finally {
-    client.release();
   }
   const publicUrl = (c.env.SERVER_PUBLIC_URL ?? 'https://sales.samjoe.com.br').replace(/\/$/, '');
   const activationUrl = needsActivation ? `${publicUrl}/ativar?token=${rawToken}` : null;
