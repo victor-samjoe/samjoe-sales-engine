@@ -28,6 +28,7 @@ export async function buildApp(options: {
   db: Database;
   config: AppConfig;
   logger?: boolean;
+  workerMode?: boolean;
 }): Promise<FastifyInstance> {
   const app = Fastify({
     logger: options.logger === false ? false : {
@@ -37,13 +38,17 @@ export async function buildApp(options: {
     requestIdHeader: 'x-request-id',
   });
 
-  await app.register(sensible);
-  await app.register(cors, { origin: false });
-  await app.register(jwt, { secret: options.config.jwtSecret });
-  await app.register(multipart);
-
-  const publicDir = path.join(process.cwd(), 'public');
-  await app.register(staticPlugin, { root: publicDir, prefix: '/', decorateReply: false });
+  // Do NOT await app.register() — awaiting triggers avvio's thenify mechanism
+  // which creates _after hooks incompatible with Cloudflare Workers. Register
+  // all plugins synchronously, then call app.ready() once to boot everything.
+  app.register(sensible);
+  app.register(cors, { origin: false });
+  app.register(jwt, { secret: options.config.jwtSecret });
+  if (!options.workerMode) {
+    app.register(multipart);
+    const publicDir = path.join(process.cwd(), 'public');
+    app.register(staticPlugin, { root: publicDir, prefix: '/', decorateReply: false });
+  }
 
   app.decorate('authenticate', async function authenticate(request, reply) {
     try {
@@ -94,12 +99,17 @@ export async function buildApp(options: {
   await integrationRoutes(app, options.db);
   await analyticsRoutes(app, options.db);
   await settingsRoutes(app, options.db);
-  await uploadRoutes(app);
+  if (!options.workerMode) {
+    await uploadRoutes(app);
+  }
   await webhookRoutes(app, options.db);
   await audienceRoutes(app, options.db);
   await whatsappRoutes(app, options.db);
   await internalRoutes(app, options.db, options.config);
   await activateRoutes(app, options.db);
-  await crmRoutes(app);
+  if (!options.workerMode) {
+    await crmRoutes(app);
+  }
+  await app.ready();
   return app;
 }

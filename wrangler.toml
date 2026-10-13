@@ -1,0 +1,12 @@
+name = "samjoe-sales-engine"
+main = "src/worker.ts"
+compatibility_date = "2025-11-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "62175234244aabb2fd04fc6f2edb13fa"
+
+[assets]
+directory = "./public"
+
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "0459e8886bc7469bbc4c8235b6f67dab"
