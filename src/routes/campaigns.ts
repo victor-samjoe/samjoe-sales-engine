@@ -126,6 +126,45 @@ export async function campaignRoutes(app: FastifyInstance, db: Database) {
     return { cancelled: result.cancelled };
   });
 
+  app.post<{ Params: { id: string } }>('/api/v1/campaigns/:id/archive', {
+    onRequest: [app.authenticate], schema: { params: CampaignParams },
+  }, async (request, reply) => {
+    if (request.user.role === 'viewer') {
+      return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'PermissÃ£o insuficiente', request_id: request.id } });
+    }
+    const result = await db.query(
+      `UPDATE campaigns SET archived_at = now(), paused_at = now(), updated_at = now()
+        WHERE id = $1 AND tenant_id = $2 RETURNING id`,
+      [request.params.id, request.user.tenantId],
+    );
+    if (!result.rowCount) return reply.code(404).send({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha nÃ£o encontrada', request_id: request.id } });
+    await writeAudit(db, { tenantId: request.user.tenantId, actorUserId: request.user.sub, entityType: 'campaign', entityId: request.params.id, action: 'campaign.archived' });
+    return { data: { archived: true } };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/v1/campaigns/:id', {
+    onRequest: [app.authenticate], schema: { params: CampaignParams },
+  }, async (request, reply) => {
+    if (request.user.role !== 'owner') {
+      return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Apenas owner pode excluir campanhas', request_id: request.id } });
+    }
+    const sent = await db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM campaign_recipients
+        WHERE campaign_id = $1 AND tenant_id = $2
+          AND delivery_status IN ('dispatching','sent','delivered','read')`,
+      [request.params.id, request.user.tenantId],
+    );
+    if (Number(sent.rows[0]?.count ?? 0) > 0) {
+      return reply.code(409).send({ error: { code: 'CAMPAIGN_HAS_HISTORY', message: 'Campanhas jÃ¡ disparadas devem ser arquivadas para preservar o histÃ³rico', request_id: request.id } });
+    }
+    const result = await db.query(
+      'DELETE FROM campaigns WHERE id = $1 AND tenant_id = $2 RETURNING id',
+      [request.params.id, request.user.tenantId],
+    );
+    if (!result.rowCount) return reply.code(404).send({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha nÃ£o encontrada', request_id: request.id } });
+    return reply.code(204).send();
+  });
+
   app.get<{ Params: { id: string } }>('/api/v1/campaigns/:id/preflight', {
     onRequest: [app.authenticate], schema: { params: CampaignParams },
   }, async (request, reply) => {

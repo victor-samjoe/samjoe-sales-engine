@@ -27,6 +27,10 @@ export type CampaignInput = {
   conversionWindowDays?: number;
   audienceRules?: AudienceRules;
   assets?: CampaignAssetInput[];
+  scheduleKind?: 'once' | 'recurring';
+  nextDispatchAt?: string | null;
+  recurrenceDays?: number | null;
+  immediateDispatch?: boolean;
 };
 
 type ContactCandidate = {
@@ -62,6 +66,31 @@ const parseJson = <T>(value: T | string, fallback: T): T => {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 };
 
+async function insertNotificationEvents(
+  db: Database,
+  tenantId: string,
+  campaignId: string,
+  rows: Array<{ id: string; contact_id: string }>,
+  eventType: 'queued' | 'cancelled',
+  occurredAt: string,
+) {
+  for (let start = 0; start < rows.length; start += 500) {
+    const batch = rows.slice(start, start + 500);
+    const values: unknown[] = [];
+    const tuples = batch.map((row) => {
+      const offset = values.length;
+      values.push(randomUUID(), tenantId, campaignId, row.id, row.contact_id, eventType, occurredAt);
+      return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7})`;
+    });
+    await db.query(
+      `INSERT INTO notification_events
+        (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
+       VALUES ${tuples.join(', ')}`,
+      values,
+    );
+  }
+}
+
 export async function createCampaign(db: Database, tenantId: string, userId: string, input: CampaignInput) {
   const isSingle = input.dispatchMode === 'single';
   const id = randomUUID();
@@ -69,11 +98,13 @@ export async function createCampaign(db: Database, tenantId: string, userId: str
     `INSERT INTO campaigns
       (id, tenant_id, name, objective, message_text, link_url, dispatch_mode,
        audience_rules_json, min_interval_hours, max_notifications_per_30d,
-       include_converted, conversion_window_days, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
+       include_converted, conversion_window_days, created_by,
+       schedule_kind, next_dispatch_at, recurrence_days, immediate_dispatch)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      RETURNING id, name, objective, message_text, link_url, status, dispatch_mode,
                audience_rules_json, min_interval_hours, max_notifications_per_30d,
-               include_converted, conversion_window_days, created_at, updated_at`,
+               include_converted, conversion_window_days, schedule_kind,
+               next_dispatch_at, recurrence_days, immediate_dispatch, created_at, updated_at`,
     [
       id, tenantId, input.name.trim(), input.objective?.trim() ?? null,
       input.messageText.trim(), input.linkUrl?.trim() ?? null,
@@ -83,6 +114,10 @@ export async function createCampaign(db: Database, tenantId: string, userId: str
       isSingle ? 1 : (input.maxNotificationsPer30d ?? 4),
       input.includeConverted ?? true,
       input.conversionWindowDays ?? 7, userId,
+      input.scheduleKind === 'recurring' ? 'recurring' : 'once',
+      input.nextDispatchAt || null,
+      input.scheduleKind === 'recurring' ? (input.recurrenceDays ?? 30) : null,
+      input.immediateDispatch ?? true,
     ],
   );
 
@@ -103,9 +138,25 @@ export async function listCampaigns(db: Database, tenantId: string) {
             c.audience_rules_json, c.min_interval_hours, c.max_notifications_per_30d,
             c.include_converted, c.conversion_window_days, c.snapshot_hash,
             c.snapshot_created_at, c.created_at, c.updated_at,
-            (SELECT count(*) FROM campaign_assets a WHERE a.campaign_id = c.id AND a.tenant_id = c.tenant_id)::int AS asset_count,
-            (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.tenant_id = c.tenant_id AND r.eligible = true)::int AS eligible_count
+            c.schedule_kind, c.next_dispatch_at, c.recurrence_days,
+            c.immediate_dispatch,
+            c.paused_at, c.archived_at, c.last_dispatched_at,
+            COALESCE(a.asset_count, 0)::int AS asset_count,
+            COALESCE(r.eligible_count, 0)::int AS eligible_count,
+            COALESCE(r.queued_count, 0)::int AS queued_count,
+            COALESCE(r.sent_count, 0)::int AS sent_count
        FROM campaigns c
+       LEFT JOIN (
+         SELECT tenant_id, campaign_id, count(*) AS asset_count
+           FROM campaign_assets GROUP BY tenant_id, campaign_id
+       ) a ON a.campaign_id = c.id AND a.tenant_id = c.tenant_id
+       LEFT JOIN (
+         SELECT tenant_id, campaign_id,
+                count(*) FILTER (WHERE eligible = true) AS eligible_count,
+                count(*) FILTER (WHERE delivery_status = 'queued') AS queued_count,
+                count(*) FILTER (WHERE delivery_status IN ('dispatching','sent','delivered','read')) AS sent_count
+           FROM campaign_recipients GROUP BY tenant_id, campaign_id
+       ) r ON r.campaign_id = c.id AND r.tenant_id = c.tenant_id
       WHERE c.tenant_id = $1
       ORDER BY c.created_at DESC`,
     [tenantId],
@@ -184,7 +235,7 @@ export async function generateCampaignPreflight(db: Database, tenantId: string, 
   );
   const campaign = campaignResult.rows[0];
   if (!campaign) return { kind: 'not_found' as const };
-  if (!['draft', 'preflight_ready'].includes(campaign.status)) return { kind: 'invalid_status' as const, status: campaign.status };
+  if (!['draft', 'preflight_ready', 'scheduled'].includes(campaign.status)) return { kind: 'invalid_status' as const, status: campaign.status };
 
   // Campanha de disparo único: bloqueia novo preflight se já existe qualquer envio real.
   if (campaign.dispatch_mode === 'single') {
@@ -208,7 +259,7 @@ export async function generateCampaignPreflight(db: Database, tenantId: string, 
     ),
 
     db.query<ConsentRow>(
-      `SELECT contact_id, action, occurred_at FROM consent_events
+      `SELECT contact_id, action, occurred_at FROM se_consent_events
         WHERE tenant_id = $1 AND channel = 'whatsapp' AND purpose = 'marketing'
         ORDER BY occurred_at DESC, created_at DESC`,
       [tenantId],
@@ -248,27 +299,26 @@ export async function generateCampaignPreflight(db: Database, tenantId: string, 
   }));
 
   await db.query('DELETE FROM campaign_recipients WHERE campaign_id = $1 AND tenant_id = $2', [campaignId, tenantId]);
-  if (evaluated.length > 0) {
+  for (let start = 0; start < evaluated.length; start += 500) {
+    const batch = evaluated.slice(start, start + 500);
+    const values: unknown[] = [];
+    const tuples = batch.map((item) => {
+      const offset = values.length;
+      values.push(
+        randomUUID(), tenantId, campaignId, item.contact.id, item.result.eligible,
+        JSON.stringify(item.result.reasons), item.result.priorDeliveryCount,
+        item.result.priorConversionCount, item.result.priorRevenueCents,
+        item.result.priorMarginCents, now.toISOString(),
+      );
+      return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}::jsonb, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11})`;
+    });
     await db.query(
       `INSERT INTO campaign_recipients
         (id, tenant_id, campaign_id, contact_id, eligible, exclusion_reasons_json,
          prior_delivery_count, prior_conversion_count, prior_revenue_cents,
          prior_margin_cents, snapshot_created_at)
-       SELECT unnest($1::uuid[]), $2, $3, unnest($4::uuid[]), unnest($5::boolean[]),
-              unnest($6::jsonb[]), unnest($7::int[]), unnest($8::int[]),
-              unnest($9::numeric[]), unnest($10::numeric[]), $11`,
-      [
-        evaluated.map(() => randomUUID()),
-        tenantId, campaignId,
-        evaluated.map((i) => i.contact.id),
-        evaluated.map((i) => i.result.eligible),
-        evaluated.map((i) => JSON.stringify(i.result.reasons)),
-        evaluated.map((i) => i.result.priorDeliveryCount),
-        evaluated.map((i) => i.result.priorConversionCount),
-        evaluated.map((i) => i.result.priorRevenueCents),
-        evaluated.map((i) => i.result.priorMarginCents),
-        now.toISOString(),
-      ],
+       VALUES ${tuples.join(', ')}`,
+      values,
     );
   }
 
@@ -339,8 +389,8 @@ function buildPreflightReport(
 }
 
 export async function approveCampaign(db: Database, tenantId: string, campaignId: string, userId: string) {
-  const check = await db.query<{ status: string; snapshot_hash: string | null }>(
-    'SELECT status, snapshot_hash FROM campaigns WHERE id = $1 AND tenant_id = $2',
+  const check = await db.query<{ status: string; snapshot_hash: string | null; immediate_dispatch: boolean }>(
+    'SELECT status, snapshot_hash, immediate_dispatch FROM campaigns WHERE id = $1 AND tenant_id = $2',
     [campaignId, tenantId],
   );
   const campaign = check.rows[0];
@@ -350,7 +400,12 @@ export async function approveCampaign(db: Database, tenantId: string, campaignId
 
   const now = new Date();
   await db.query(
-    `UPDATE campaigns SET status = 'approved', approved_by = $1, approved_at = $2, updated_at = now()
+    `UPDATE campaigns SET status = 'approved', approved_by = $1, approved_at = $2,
+       next_dispatch_at = CASE
+         WHEN immediate_dispatch AND (schedule_kind = 'once' OR next_dispatch_at IS NULL) THEN now() + interval '5 minutes'
+         ELSE next_dispatch_at
+       END,
+       updated_at = now()
      WHERE id = $3 AND tenant_id = $4`,
     [userId, now.toISOString(), campaignId, tenantId],
   );
@@ -362,18 +417,7 @@ export async function approveCampaign(db: Database, tenantId: string, campaignId
     [now.toISOString(), campaignId, tenantId],
   );
   if (eligible.rows.length > 0) {
-    await db.query(
-      `INSERT INTO notification_events
-        (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
-       SELECT unnest($1::uuid[]), $2, $3, unnest($4::uuid[]), unnest($5::uuid[]), 'queued', $6`,
-      [
-        eligible.rows.map(() => randomUUID()),
-        tenantId, campaignId,
-        eligible.rows.map((r) => r.id),
-        eligible.rows.map((r) => r.contact_id),
-        now.toISOString(),
-      ],
-    );
+    await insertNotificationEvents(db, tenantId, campaignId, eligible.rows, 'queued', now.toISOString());
   }
   return { kind: 'ok' as const, queued: eligible.rows.length, snapshot_hash: campaign.snapshot_hash };
 }
@@ -389,6 +433,16 @@ export async function cancelCampaign(db: Database, tenantId: string, campaignId:
     return { kind: 'invalid_status' as const, status: campaign.status };
   }
 
+  const dispatched = await db.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM campaign_recipients
+      WHERE campaign_id = $1 AND tenant_id = $2
+        AND delivery_status IN ('dispatching', 'sent', 'delivered', 'read')`,
+    [campaignId, tenantId],
+  );
+  if (Number(dispatched.rows[0]?.count ?? 0) > 0) {
+    return { kind: 'already_dispatched' as const };
+  }
+
   const now = new Date();
   await db.query(
     `UPDATE campaigns SET status = 'cancelled', updated_at = now() WHERE id = $1 AND tenant_id = $2`,
@@ -402,18 +456,7 @@ export async function cancelCampaign(db: Database, tenantId: string, campaignId:
     [campaignId, tenantId],
   );
   if (cancelled.rows.length > 0) {
-    await db.query(
-      `INSERT INTO notification_events
-        (id, tenant_id, campaign_id, campaign_recipient_id, contact_id, event_type, occurred_at)
-       SELECT unnest($1::uuid[]), $2, $3, unnest($4::uuid[]), unnest($5::uuid[]), 'cancelled', $6`,
-      [
-        cancelled.rows.map(() => randomUUID()),
-        tenantId, campaignId,
-        cancelled.rows.map((r) => r.id),
-        cancelled.rows.map((r) => r.contact_id),
-        now.toISOString(),
-      ],
-    );
+    await insertNotificationEvents(db, tenantId, campaignId, cancelled.rows, 'cancelled', now.toISOString());
   }
   return { kind: 'ok' as const, cancelled: cancelled.rows.length };
 }
@@ -443,6 +486,10 @@ export async function updateCampaign(db: Database, tenantId: string, campaignId:
   if (input.includeConverted != null) setParts.push(`include_converted = ${p(input.includeConverted)}`);
   if (input.conversionWindowDays != null && Number.isFinite(input.conversionWindowDays)) setParts.push(`conversion_window_days = ${p(input.conversionWindowDays)}`);
   if (input.audienceRules != null) setParts.push(`audience_rules_json = ${p(JSON.stringify(input.audienceRules))}::jsonb`);
+  if (input.scheduleKind != null) setParts.push(`schedule_kind = ${p(input.scheduleKind)}`);
+  if (input.nextDispatchAt !== undefined) setParts.push(`next_dispatch_at = ${p(input.nextDispatchAt || null)}`);
+  if (input.recurrenceDays !== undefined) setParts.push(`recurrence_days = ${p(input.recurrenceDays ?? null)}`);
+  if (input.immediateDispatch !== undefined) setParts.push(`immediate_dispatch = ${p(input.immediateDispatch)}`);
 
   const hasAssetUpdate = input.assets !== undefined;
   if (setParts.length === 0 && !hasAssetUpdate) {

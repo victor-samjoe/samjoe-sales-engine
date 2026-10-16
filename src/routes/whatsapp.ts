@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { Database } from '../core/db.js';
+import { WA_DEFAULT_TEMPLATES, type WaResponseTemplates } from '../services/wa-notify.js';
 
 const WA_DEFAULT_URL = 'http://localhost:8081';
 const WA_DEFAULT_INSTANCE = 'samjoe';
@@ -10,6 +11,7 @@ interface WaConfig {
   instanceName: string;
   apiKey: string;
   automationEnabled: boolean;
+  alertNumbers: string[];
 }
 
 async function getTenantWaConfig(db: Database, tenantId: string): Promise<WaConfig> {
@@ -26,6 +28,7 @@ async function getTenantWaConfig(db: Database, tenantId: string): Promise<WaConf
     instanceName: (settings.wa_instance_name as string | undefined) ?? WA_DEFAULT_INSTANCE,
     apiKey: (settings.wa_api_key as string | undefined) ?? '',
     automationEnabled: (settings.wa_automation_enabled as boolean | undefined) ?? false,
+    alertNumbers: (settings.wa_alert_numbers as string[] | undefined) ?? [],
   };
 }
 
@@ -44,6 +47,7 @@ async function saveTenantWaConfig(db: Database, tenantId: string, patch: Partial
   if (patch.instanceName !== undefined) settings.wa_instance_name = patch.instanceName;
   if (patch.apiKey !== undefined) settings.wa_api_key = patch.apiKey;
   if (patch.automationEnabled !== undefined) settings.wa_automation_enabled = patch.automationEnabled;
+  if (patch.alertNumbers !== undefined) settings.wa_alert_numbers = patch.alertNumbers.filter(Boolean);
 
   await db.query(
     `UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`,
@@ -62,6 +66,16 @@ const WaConfigBody = Type.Object({
   instanceName: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
   apiKey: Type.Optional(Type.String({ maxLength: 512 })),
   automationEnabled: Type.Optional(Type.Boolean()),
+  alertNumbers: Type.Optional(Type.Array(Type.String({ maxLength: 20 }), { maxItems: 20 })),
+});
+
+const WaResponseTemplateBody = Type.Object({
+  enabled: Type.Boolean(),
+  message: Type.String({ maxLength: 1000 }),
+});
+
+const WaResponsesBody = Type.Object({
+  templates: Type.Record(Type.String({ maxLength: 50 }), WaResponseTemplateBody),
 });
 
 export async function whatsappRoutes(app: FastifyInstance, db: Database) {
@@ -73,6 +87,7 @@ export async function whatsappRoutes(app: FastifyInstance, db: Database) {
         instanceName: cfg.instanceName,
         hasApiKey: !!cfg.apiKey,
         automationEnabled: cfg.automationEnabled,
+        alertNumbers: cfg.alertNumbers,
       },
     };
   });
@@ -83,6 +98,49 @@ export async function whatsappRoutes(app: FastifyInstance, db: Database) {
   }, async (request) => {
     const body = request.body as Partial<WaConfig>;
     await saveTenantWaConfig(db, request.user.tenantId, body);
+    return { data: { ok: true } };
+  });
+
+  app.get('/api/v1/integrations/whatsapp/responses', { onRequest: [app.authenticate] }, async (request) => {
+    const result = await db.query<{ settings_json: Record<string, unknown> | string }>(
+      `SELECT settings_json FROM tenants WHERE id = $1`,
+      [request.user.tenantId],
+    );
+    const row = result.rows[0];
+    const settings = row
+      ? (typeof row.settings_json === 'string' ? JSON.parse(row.settings_json) as Record<string, unknown> : row.settings_json)
+      : {};
+    const saved = settings.wa_response_templates as WaResponseTemplates | undefined;
+    const templates: WaResponseTemplates = {};
+    for (const [key, defaultTemplate] of Object.entries(WA_DEFAULT_TEMPLATES)) {
+      templates[key] = saved?.[key] ?? defaultTemplate;
+    }
+    return { data: { templates } };
+  });
+
+  app.put('/api/v1/integrations/whatsapp/responses', {
+    onRequest: [app.authenticate],
+    schema: { body: WaResponsesBody },
+  }, async (request, reply) => {
+    const body = request.body as { templates: WaResponseTemplates };
+    const invalidKey = Object.keys(body.templates).find((key) => !(key in WA_DEFAULT_TEMPLATES));
+    if (invalidKey) {
+      return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: `Status de resposta inválido: ${invalidKey}` } });
+    }
+    const current = await db.query<{ settings_json: Record<string, unknown> | string }>(
+      `SELECT settings_json FROM tenants WHERE id = $1`,
+      [request.user.tenantId],
+    );
+    const row = current.rows[0];
+    if (!row) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Tenant não encontrado' } });
+    const settings = typeof row.settings_json === 'string'
+      ? JSON.parse(row.settings_json) as Record<string, unknown>
+      : { ...row.settings_json };
+    settings.wa_response_templates = { ...(settings.wa_response_templates as WaResponseTemplates | undefined), ...body.templates };
+    await db.query(
+      `UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`,
+      [JSON.stringify(settings), request.user.tenantId],
+    );
     return { data: { ok: true } };
   });
 
@@ -99,7 +157,7 @@ export async function whatsappRoutes(app: FastifyInstance, db: Database) {
         body: JSON.stringify({ instanceName: cfg.instanceName, integration: 'WHATSAPP-BAILEYS', qrcode: true }),
         signal: AbortSignal.timeout(8000),
       });
-      if (!createRes.ok && createRes.status !== 409) {
+      if (!createRes.ok && createRes.status !== 409 && createRes.status !== 403) {
         const errBody = await createRes.json().catch(() => ({})) as { message?: string };
         return reply.code(502).send({ error: { code: 'EVOLUTION_ERROR', message: errBody.message ?? 'Erro ao criar instância WhatsApp' } });
       }

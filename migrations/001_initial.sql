@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 
 CREATE INDEX IF NOT EXISTS contacts_tenant_stage_idx ON contacts (tenant_id, stage);
 
-CREATE TABLE IF NOT EXISTS consent_events (
+CREATE TABLE IF NOT EXISTS se_consent_events (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -64,8 +64,8 @@ CREATE TABLE IF NOT EXISTS consent_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS consent_events_lookup_idx
-  ON consent_events (tenant_id, contact_id, channel, purpose, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS se_consent_events_lookup_idx
+  ON se_consent_events (tenant_id, contact_id, channel, purpose, occurred_at DESC);
 
 CREATE TABLE IF NOT EXISTS products (
   id uuid PRIMARY KEY,

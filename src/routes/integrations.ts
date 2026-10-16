@@ -28,6 +28,7 @@ const SamJoeFoodEventBody = Type.Object({
     Type.Literal('customer.created'), Type.Literal('customer.updated'),
     Type.Literal('order.created'), Type.Literal('order.paid'),
     Type.Literal('order.cancelled'), Type.Literal('order.refunded'),
+    Type.Literal('order.status_changed'),
   ]),
   occurred_at: Type.String({ format: 'date-time' }),
   customer: Type.Object({
@@ -38,9 +39,20 @@ const SamJoeFoodEventBody = Type.Object({
   }),
   order: Type.Optional(Type.Object({
     external_id: Type.String({ minLength: 1, maxLength: 255 }),
-    total_cents: Type.Integer({ minimum: 0 }),
+    total_cents: Type.Optional(Type.Integer({ minimum: 0 })),
     cost_cents: Type.Optional(Type.Integer({ minimum: 0 })),
     ref: Type.Optional(Type.String({ maxLength: 50 })),
+    from_status: Type.Optional(Type.String({ maxLength: 50 })),
+    to_status: Type.Optional(Type.String({ maxLength: 50 })),
+    fulfillment: Type.Optional(Type.String({ maxLength: 50 })),
+    delivery_address: Type.Optional(Type.String({ maxLength: 500 })),
+    items: Type.Optional(Type.Array(Type.Object({
+      name: Type.Optional(Type.String({ maxLength: 200 })),
+      quantity: Type.Optional(Type.Integer({ minimum: 1 })),
+      unit_price_cents: Type.Optional(Type.Integer({ minimum: 0 })),
+      external_product_id: Type.Optional(Type.String({ maxLength: 255 })),
+      category: Type.Optional(Type.String({ maxLength: 100 })),
+    }), { maxItems: 100 })),
   })),
 });
 
@@ -169,7 +181,8 @@ export async function integrationRoutes(app: FastifyInstance, db: Database) {
         ? JSON.parse(settingsRow.rows[0].settings_json) as Record<string, unknown>
         : settingsRow.rows[0].settings_json)
       : {};
-    const engineUrl = ((settings.app_url as string | undefined) ?? '').replace(/\/$/, '') || 'http://localhost:4010';
+    const engineUrl = ((settings.app_url as string | undefined) ?? '').replace(/\/$/, '')
+      || (process.env.SERVER_PUBLIC_URL ?? 'https://sales.samjoe.com.br').replace(/\/$/, '');
     const webhookUrl = `${engineUrl}/api/v1/integrations/samjoe-food/events`;
 
     // Configure Sales Engine side

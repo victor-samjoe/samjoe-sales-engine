@@ -13,7 +13,7 @@ const EVOLUTION_STATUS_MAP: Record<string, 'delivered' | 'read' | 'failed'> = {
 
 export async function webhookRoutes(app: FastifyInstance, db: Database) {
   // Evolution API sends message update events here.
-  // Configure Evolution with: POST /webhook/set/{instance} → url: http://host.docker.internal:4010/api/v1/webhooks/evolution
+  // Configure Evolution with: POST /webhook/set/{instance} → url: https://sales.samjoe.com.br/api/v1/webhooks/evolution
   app.post('/api/v1/webhooks/evolution', async (request, reply) => {
     const body = request.body as {
       event?: string;

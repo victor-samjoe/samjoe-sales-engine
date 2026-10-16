@@ -7,6 +7,9 @@ account_id = "62175234244aabb2fd04fc6f2edb13fa"
 [assets]
 directory = "./public"
 
+[vars]
+EVOLUTION_API_URL = "https://evolution.samjoe.com.br"
+
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "0459e8886bc7469bbc4c8235b6f67dab"

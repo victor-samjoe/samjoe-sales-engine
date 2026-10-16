@@ -16,11 +16,11 @@
     publicos: 'Públicos', integrations: 'Integrações', settings: 'Configurações',
   };
   const deliveryStatusLabels = {
-    pending: 'Pendente', queued: 'Na fila', sent: 'Enviado',
+    pending: 'Pendente', queued: 'Na fila', dispatching: 'Enviando', sent: 'Enviado',
     delivered: 'Entregue', read: 'Lido', failed: 'Falhou', cancelled: 'Cancelado',
   };
   const deliveryStatusClass = {
-    pending: 'neutral', queued: 'accent', sent: 'success',
+    pending: 'neutral', queued: 'accent', dispatching: 'accent', sent: 'success',
     delivered: 'success', read: 'success', failed: 'danger', cancelled: 'neutral',
   };
   const campaignStatusLabels = {
@@ -44,8 +44,14 @@
     products: [],
     campaigns: [],
     audiences: [],
+    editingContactId: null,
     editingCampaignId: null,
     editingAudienceId: null,
+    audienceSelectedContactIds: new Set(),
+    campaignRecipients: [],
+    campaignRecipientsName: '',
+    confirmResolver: null,
+    confirmPreviousModalId: null,
     activeView: 'dashboard',
     queue: { data: [], total: 0, offset: 0, status: '', campaignId: '' },
   };
@@ -66,13 +72,45 @@
     return shortDate(date);
   };
 
+  function finishUiConfirm(answer) {
+    if (!state.confirmResolver) return;
+    const resolve = state.confirmResolver;
+    const previousModalId = state.confirmPreviousModalId;
+    state.confirmResolver = null;
+    state.confirmPreviousModalId = null;
+    $('#confirmModal').classList.remove('is-active', 'is-danger');
+    if (previousModalId) {
+      $(`#${previousModalId}`)?.classList.add('is-active');
+    } else {
+      $('#modalBackdrop').classList.add('is-hidden');
+      document.body.style.overflow = '';
+    }
+    resolve(answer);
+  }
+
+  function uiConfirm({ title = 'Confirmar ação', message, confirmLabel = 'Confirmar', danger = false }) {
+    if (state.confirmResolver) finishUiConfirm(false);
+    $('#confirmModalTitle').textContent = title;
+    $('#confirmModalMessage').textContent = message;
+    $('#confirmModalAccept').textContent = confirmLabel;
+    $('#confirmModal').classList.toggle('is-danger', danger);
+    state.confirmPreviousModalId = $$('.modal.is-active').find((node) => node.id !== 'confirmModal')?.id || null;
+    $$('.modal').forEach((node) => node.classList.remove('is-active'));
+    $('#confirmModal').classList.add('is-active');
+    $('#modalBackdrop').classList.remove('is-hidden');
+    document.body.style.overflow = 'hidden';
+    return new Promise((resolve) => { state.confirmResolver = resolve; });
+  }
+
   async function api(path, options = {}) {
     const headers = { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers };
-    if (state.token) headers.Authorization = `Bearer ${state.token}`;
+    const requestToken = state.token;
+    if (requestToken) headers.Authorization = `Bearer ${requestToken}`;
     const response = await fetch(path, { ...options, headers });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      if (response.status === 401 && path !== '/api/v1/auth/login') logout(false);
+      // Do not let an older in-flight request clear a session created meanwhile.
+      if (response.status === 401 && path !== '/api/v1/auth/login' && requestToken && requestToken === state.token) logout(false);
       throw new Error(payload.error?.message || `Erro ${response.status}`);
     }
     return payload;
@@ -99,22 +137,16 @@
   }
 
   async function checkHealth() {
-    const dot = $('#apiDot');
     try {
       const result = await api('/health');
       const healthy = result.status === 'ok' && result.database === 'ok';
-      dot.classList.toggle('ok', healthy);
-      $('#apiStateText').textContent = healthy ? 'API e banco online' : 'Serviço degradado';
       $('#apiBadge').textContent = healthy ? 'Online' : 'Degradada';
       $('#apiBadge').className = `status-badge ${healthy ? 'success' : 'danger'}`;
     } catch {
-      dot.classList.remove('ok');
-      $('#apiStateText').textContent = 'API indisponível';
       $('#apiBadge').textContent = 'Offline';
       $('#apiBadge').className = 'status-badge danger';
     }
-    checkWaHealth();
-    checkN8nHealth();
+    if (state.token) checkWaHealth();
   }
 
   async function checkWaHealth() {
@@ -123,9 +155,37 @@
     const badge = $('#waBadge');
     const disconnectBtn = $('#waDisconnectBtn');
     const connectBtn = $('#waConfigBtn');
-    const automationRow = $('#waAutomationRow');
-    const automationToggle = $('#waAutomationToggle');
+    const rDot = $('#n8nHealthDot');
+    const rText = $('#n8nHealthText');
+    const rBadge = $('#n8nBadge');
+    const rToggleRow = $('#realtimeToggleRow');
+    const rToggle = $('#realtimeAutomationToggle');
     if (!dot) return;
+
+    function setRtr(state, enabled) {
+      const rConfigBtn = $('#realtimeConfigBtn');
+      if (state === 'connected') {
+        if (rToggleRow) rToggleRow.classList.remove('is-hidden');
+        if (rConfigBtn) rConfigBtn.classList.remove('is-hidden');
+        if (rToggle) rToggle.checked = enabled;
+        if (rDot) rDot.className = enabled ? 'health-dot ok' : 'health-dot';
+        if (rText) rText.textContent = enabled ? 'Ativo' : 'Inativo';
+        if (rBadge) { rBadge.textContent = enabled ? 'Ativo' : 'Inativo'; rBadge.className = enabled ? 'status-badge success' : 'status-badge neutral'; }
+      } else if (state === 'connecting') {
+        if (rToggleRow) rToggleRow.classList.add('is-hidden');
+        if (rConfigBtn) rConfigBtn.classList.add('is-hidden');
+        if (rDot) rDot.className = 'health-dot';
+        if (rText) rText.textContent = 'Aguardando WhatsApp';
+        if (rBadge) { rBadge.textContent = 'Aguardando'; rBadge.className = 'status-badge neutral'; }
+      } else {
+        if (rToggleRow) rToggleRow.classList.add('is-hidden');
+        if (rConfigBtn) rConfigBtn.classList.add('is-hidden');
+        if (rDot) rDot.className = 'health-dot fail';
+        if (rText) rText.textContent = 'Requer WhatsApp';
+        if (rBadge) { rBadge.textContent = 'Sem WhatsApp'; rBadge.className = 'status-badge danger'; }
+      }
+    }
+
     try {
       const result = await api('/api/v1/integrations/whatsapp/status');
       const waState = result.data?.state;
@@ -136,55 +196,33 @@
         if (badge) { badge.textContent = 'Conectado'; badge.className = 'status-badge success'; }
         if (disconnectBtn) disconnectBtn.classList.remove('is-hidden');
         if (connectBtn) connectBtn.textContent = 'Reconectar';
-        if (automationRow) automationRow.classList.remove('is-hidden');
-        if (automationToggle) {
-          try {
-            const cfg = await api('/api/v1/integrations/whatsapp/config');
-            automationToggle.checked = cfg.data?.automationEnabled ?? false;
-          } catch { /* ignore */ }
-        }
+        let enabled = false;
+        try {
+          const cfg = await api('/api/v1/integrations/whatsapp/config');
+          enabled = cfg.data?.automationEnabled ?? false;
+        } catch { /* ignore */ }
+        setRtr('connected', enabled);
       } else if (waState === 'connecting') {
         dot.className = 'health-dot warn';
         if (text) text.textContent = 'Conectando…';
         if (badge) { badge.textContent = 'Conectando'; badge.className = 'status-badge accent'; }
         if (disconnectBtn) disconnectBtn.classList.add('is-hidden');
         if (connectBtn) connectBtn.textContent = 'Conectar';
-        if (automationRow) automationRow.classList.add('is-hidden');
+        setRtr('connecting', false);
       } else {
         dot.className = 'health-dot fail';
         if (text) text.textContent = waState === 'offline' ? 'API offline' : 'Desconectado';
         if (badge) { badge.textContent = waState === 'offline' ? 'Offline' : 'Desconectado'; badge.className = 'status-badge danger'; }
         if (disconnectBtn) disconnectBtn.classList.add('is-hidden');
         if (connectBtn) connectBtn.textContent = 'Conectar';
-        if (automationRow) automationRow.classList.add('is-hidden');
+        setRtr('disconnected', false);
       }
     } catch {
       dot.className = 'health-dot fail';
       if (text) text.textContent = 'Indisponível';
       if (badge) { badge.textContent = 'Offline'; badge.className = 'status-badge danger'; }
       if (disconnectBtn) disconnectBtn.classList.add('is-hidden');
-      if (automationRow) automationRow.classList.add('is-hidden');
-    }
-  }
-
-  async function checkN8nHealth() {
-    const url = (localStorage.getItem('n8nApiUrl') || 'http://localhost:5679').replace(/\/$/, '');
-    const dot = $('#n8nHealthDot');
-    const text = $('#n8nHealthText');
-    const badge = $('#n8nBadge');
-    if (!dot) return;
-    try {
-      const ctrl = new AbortController();
-      const tid = window.setTimeout(() => ctrl.abort(), 3000);
-      await fetch(`${url}/healthz`, { mode: 'no-cors', signal: ctrl.signal });
-      window.clearTimeout(tid);
-      dot.className = 'health-dot ok';
-      if (text) text.textContent = 'Motor online';
-      if (badge) { badge.textContent = 'Online'; badge.className = 'status-badge success'; }
-    } catch {
-      dot.className = 'health-dot fail';
-      if (text) text.textContent = 'Motor offline';
-      if (badge) { badge.textContent = 'Offline'; badge.className = 'status-badge danger'; }
+      setRtr('disconnected', false);
     }
   }
 
@@ -254,6 +292,7 @@
       state.campaigns = campaignsResult.data || [];
       renderAll();
       loadSamJoeFoodConfig().catch(() => {});
+      loadCategories().catch(() => {});
       if (showConfirmation) toast('Dados atualizados.');
     } catch (err) {
       toast(`Não foi possível carregar os dados: ${err.message}`, 'error');
@@ -311,24 +350,35 @@
   function filteredContacts() {
     const search = $('#contactSearch').value.trim().toLowerCase();
     const stage = $('#stageFilter').value;
+    const showArchived = $('#showArchivedContacts')?.checked ?? false;
     return state.contacts.filter((contact) => {
       const haystack = `${contact.full_name} ${contact.phone_e164 || ''} ${contact.email || ''}`.toLowerCase();
-      return (!search || haystack.includes(search)) && (!stage || contact.stage === stage);
+      return (showArchived || !contact.archived_at) && (!search || haystack.includes(search)) && (!stage || contact.stage === stage);
     });
   }
 
   function renderContacts() {
     const contacts = filteredContacts();
     const body = $('#contactsTableBody');
-    body.innerHTML = contacts.map((contact) => `
-      <tr>
+    body.innerHTML = contacts.map((contact) => {
+      const consentStatus = contact.marketing_consent_status;
+      const permission = contact.archived_at
+        ? { css: 'pending', label: '● Arquivado' }
+        : contact.do_not_contact || consentStatus === 'revoked'
+        ? { css: 'blocked', label: '● Revogado' }
+        : consentStatus === 'granted'
+          ? { css: 'ok', label: '● Autorizado' }
+          : { css: 'pending', label: '● Sem autorização' };
+      return `
+      <tr class="${contact.archived_at ? 'contact-archived' : ''}">
         <td><div class="contact-cell"><span class="avatar">${escapeHtml(initials(contact.full_name))}</span><span><strong>${escapeHtml(contact.full_name)}</strong><small>${escapeHtml(contact.phone_e164 || contact.email || 'Sem telefone ou e-mail')}</small></span></div></td>
         <td><span class="stage-badge ${escapeHtml(contact.stage)}">${escapeHtml(stageLabels[contact.stage] || contact.stage)}</span></td>
         <td>${escapeHtml(originLabels[contact.origin] || contact.origin)}</td>
-        <td><span class="permission ${contact.do_not_contact ? 'blocked' : 'ok'}">${contact.do_not_contact ? '● Bloqueado' : '● Permitido'}</span></td>
+        <td><span class="permission ${permission.css}">${permission.label}</span></td>
         <td>${shortDate(contact.created_at)}</td>
-        <td><button class="row-action" data-consent-id="${contact.id}" data-consent-name="${escapeHtml(contact.full_name)}">Consentimento</button></td>
-      </tr>`).join('');
+        <td><div class="row-actions"><button class="row-action" data-consent-id="${contact.id}" data-consent-name="${escapeHtml(contact.full_name)}">Consentimento</button><button class="row-action" data-edit-contact="${contact.id}">Editar</button>${contact.archived_at ? '' : `<button class="row-action" data-archive-contact="${contact.id}" data-contact-name="${escapeHtml(contact.full_name)}">Arquivar</button>`}<button class="row-action danger" data-delete-contact="${contact.id}" data-contact-name="${escapeHtml(contact.full_name)}">Excluir</button></div></td>
+      </tr>`;
+    }).join('');
     const empty = !contacts.length;
     $('#contactsEmpty').classList.toggle('is-hidden', !empty);
     $('.table-wrap', body.closest('.table-panel')).classList.toggle('is-hidden', empty);
@@ -339,7 +389,8 @@
     const from = $('#campaignDateFrom')?.value || '';
     const to = $('#campaignDateTo')?.value || '';
     return state.campaigns.filter((c) => {
-      if (activeStatuses.length && !activeStatuses.includes(c.status)) return false;
+      if (!activeStatuses.includes(c.status)) return false;
+      if (c.archived_at && !$('#showArchivedCampaigns')?.checked) return false;
       const day = (c.created_at || '').slice(0, 10);
       if (from && day < from) return false;
       if (to && day > to) return false;
@@ -351,21 +402,29 @@
     const campaigns = filteredCampaigns();
     const body = $('#campaignsTableBody');
     body.innerHTML = campaigns.map((c) => {
-      const canAnalyse = c.status === 'draft' || c.status === 'preflight_ready';
+      const canAnalyse = ['draft', 'scheduled', 'preflight_ready'].includes(c.status) && !c.archived_at;
       const canApprove = c.status === 'preflight_ready';
-      const canCancel = !['completed', 'cancelled'].includes(c.status);
-      const canEdit = c.status === 'draft' || c.status === 'preflight_ready';
+      const canDispatch = (c.status === 'approved' || c.status === 'sending') && !c.paused_at && !c.archived_at;
+      const canCancel = Number(c.sent_count || 0) === 0 && !['completed', 'cancelled'].includes(c.status) && !c.archived_at;
+      const canEdit = ['draft', 'scheduled', 'preflight_ready'].includes(c.status) && !c.archived_at;
       const canView = c.status !== 'draft';
+      const scheduleLabel = c.schedule_kind === 'recurring'
+        ? `Recorrente${c.recurrence_days ? ` · a cada ${c.recurrence_days} dias` : ''}`
+        : 'Campanha única';
       const actions = [
         canEdit ? `<button class="row-action" data-edit-id="${c.id}">Editar</button>` : '',
         canAnalyse ? `<button class="row-action" data-preflight-id="${c.id}" data-preflight-name="${escapeHtml(c.name)}">Analisar</button>` : '',
         canApprove ? `<button class="row-action approve" data-approve-id="${c.id}" data-approve-name="${escapeHtml(c.name)}">Aprovar</button>` : '',
+        canDispatch ? `<button class="row-action approve" data-dispatch-id="${c.id}" data-dispatch-name="${escapeHtml(c.name)}">Enviar agora</button>` : '',
+        !c.archived_at && ['approved', 'sending', 'scheduled'].includes(c.status) ? `<button class="row-action" data-${c.paused_at ? 'resume' : 'pause'}-id="${c.id}">${c.paused_at ? 'Retomar' : 'Pausar'}</button>` : '',
         canView ? `<button class="row-action view" data-view-campaign-id="${c.id}">Visualizar</button>` : '',
-        canCancel && c.status !== 'draft' ? `<button class="row-action cancel" data-cancel-id="${c.id}" data-cancel-name="${escapeHtml(c.name)}">Cancelar</button>` : '',
+        canCancel ? `<button class="row-action cancel" data-cancel-id="${c.id}" data-cancel-name="${escapeHtml(c.name)}">Cancelar</button>` : '',
         `<button class="row-action" data-clone-id="${c.id}" data-clone-name="${escapeHtml(c.name)}">Clonar</button>`,
+        !c.archived_at ? `<button class="row-action" data-archive-campaign-id="${c.id}" data-campaign-name="${escapeHtml(c.name)}">Arquivar</button>` : '',
+        Number(c.sent_count || 0) === 0 ? `<button class="row-action cancel" data-delete-campaign-id="${c.id}" data-campaign-name="${escapeHtml(c.name)}">Excluir</button>` : '',
       ].filter(Boolean).join(' ');
       return `<tr>
-        <td><strong>${escapeHtml(c.name)}</strong>${c.objective ? `<br><small class="muted">${escapeHtml(c.objective)}</small>` : ''}</td>
+        <td><strong>${escapeHtml(c.name)}</strong><br><small class="muted">${scheduleLabel}${c.next_dispatch_at ? ` · Próximo: ${new Date(c.next_dispatch_at).toLocaleString('pt-BR')}` : ''}${c.archived_at ? ' · Arquivada' : ''}</small>${c.objective ? `<br><small class="muted">${escapeHtml(c.objective)}</small>` : ''}</td>
         <td><span class="status-badge ${escapeHtml(campaignStatusClass[c.status] || 'neutral')}">${escapeHtml(campaignStatusLabels[c.status] || c.status)}</span></td>
         <td>${canAnalyse && !c.snapshot_hash ? '<span class="muted">—</span>' : escapeHtml(String(c.eligible_count ?? 0))}</td>
         <td class="campaign-msg">${escapeHtml((c.message_text || '').slice(0, 90))}</td>
@@ -380,13 +439,14 @@
 
   async function loadQueue() {
     const { status, campaignId } = state.queue;
-    const params = new URLSearchParams({ limit: '50', offset: String(state.queue.offset) });
-    if (status) params.set('status', status);
-    if (campaignId) params.set('campaign_id', campaignId);
     try {
-      const result = await api(`/api/v1/dispatch/recipients?${params}`);
-      state.queue.data = result.data || [];
-      state.queue.total = result.total || 0;
+      const result = await api('/api/v1/dispatch/campaigns');
+      state.queue.data = (result.data || []).filter((row) => {
+        if (campaignId && row.campaign_id !== campaignId) return false;
+        if (status && Number(row[status] || 0) === 0) return false;
+        return true;
+      });
+      state.queue.total = state.queue.data.length;
       renderQueue();
     } catch (err) {
       toast(`Erro ao carregar fila: ${err.message}`, 'error');
@@ -394,37 +454,42 @@
   }
 
   function renderQueue() {
-    const { data, total, offset } = state.queue;
+    const { data, total } = state.queue;
     const body = $('#queueTableBody');
-    const fmt = (ts) => ts ? new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(ts)) : '—';
     body.innerHTML = data.map((r) => `
       <tr>
-        <td><strong>${escapeHtml(r.campaign_name)}</strong></td>
-        <td>${escapeHtml(r.full_name)}</td>
-        <td style="font-size:12px;color:var(--muted)">${escapeHtml(r.phone_e164 || '—')}</td>
-        <td><span class="status-badge ${escapeHtml(deliveryStatusClass[r.delivery_status] || 'neutral')}">${escapeHtml(deliveryStatusLabels[r.delivery_status] || r.delivery_status)}</span></td>
-        <td style="font-size:12px">${fmt(r.queued_at)}</td>
-        <td style="font-size:12px">${fmt(r.sent_at)}</td>
-        <td style="font-size:12px">${fmt(r.delivered_at)}</td>
-        <td style="font-size:12px">${fmt(r.read_at)}</td>
+        <td><button class="campaign-link" data-open-recipients="${r.campaign_id}" data-campaign-name="${escapeHtml(r.campaign_name)}">${escapeHtml(r.campaign_name)}</button></td>
+        <td><span class="status-badge neutral">${r.schedule_kind === 'recurring' ? 'Recorrente' : 'Única'}</span></td>
+        <td><strong>${Number(r.total || 0)}</strong><br><small class="muted">${Number(r.queued || 0)} na fila · ${Number(r.sent || 0) + Number(r.delivered || 0) + Number(r.read || 0)} enviados · ${Number(r.failed || 0)} falhas</small></td>
+        <td>${r.next_dispatch_at ? `<span>${new Date(r.next_dispatch_at).toLocaleString('pt-BR')}</span><br>` : ''}<strong class="queue-countdown" data-next-dispatch="${escapeHtml(r.next_dispatch_at || '')}" data-paused="${r.paused_at ? 'true' : 'false'}"></strong></td>
+        <td><span class="status-badge ${r.paused_at ? 'neutral' : escapeHtml(campaignStatusClass[r.status] || 'accent')}">${r.paused_at ? 'Pausada' : escapeHtml(campaignStatusLabels[r.status] || r.status)}</span></td>
+        <td><div class="queue-actions">
+          ${(r.status === 'approved' || r.status === 'sending') && !r.paused_at ? `<button class="row-action approve" data-queue-dispatch="${r.campaign_id}" data-campaign-name="${escapeHtml(r.campaign_name)}">Disparar agora</button>` : ''}
+          <button class="row-action" data-queue-${r.paused_at ? 'resume' : 'pause'}="${r.campaign_id}">${r.paused_at ? 'Retomar' : 'Pausar'}</button>
+          ${Number(r.dispatching || 0) + Number(r.sent || 0) + Number(r.delivered || 0) + Number(r.read || 0) === 0 ? `<button class="row-action cancel" data-queue-cancel="${r.campaign_id}" data-campaign-name="${escapeHtml(r.campaign_name)}">Cancelar</button>` : ''}
+        </div></td>
       </tr>`).join('');
     const empty = !data.length;
     $('#queueEmpty').classList.toggle('is-hidden', !empty);
     $('.table-wrap', $('#queueTableBody').closest('.table-panel')).classList.toggle('is-hidden', empty);
 
-    const pg = $('#queuePagination');
-    if (total > 50) {
-      const page = Math.floor(offset / 50) + 1;
-      const pages = Math.ceil(total / 50);
-      pg.innerHTML = `
-        <button class="secondary-button small" id="queuePrev" ${offset === 0 ? 'disabled' : ''}>← Anterior</button>
-        <span style="font-size:12px;color:var(--muted)">Página ${page} de ${pages} · ${total} registros</span>
-        <button class="secondary-button small" id="queueNext" ${offset + 50 >= total ? 'disabled' : ''}>Próxima →</button>`;
-      $('#queuePrev')?.addEventListener('click', () => { state.queue.offset -= 50; loadQueue(); });
-      $('#queueNext')?.addEventListener('click', () => { state.queue.offset += 50; loadQueue(); });
-    } else {
-      pg.innerHTML = total > 0 ? `<span style="font-size:12px;color:var(--muted)">${total} registro${total !== 1 ? 's' : ''}</span>` : '';
-    }
+    $('#queuePagination').innerHTML = total > 0 ? `<span style="font-size:12px;color:var(--muted)">${total} campanha${total !== 1 ? 's' : ''}</span>` : '';
+    updateQueueCountdowns();
+  }
+
+  function updateQueueCountdowns() {
+    $$('.queue-countdown').forEach((el) => {
+      if (el.dataset.paused === 'true') { el.textContent = 'Contagem pausada'; return; }
+      if (!el.dataset.nextDispatch) { el.textContent = 'Aguardando ação manual'; return; }
+      const remaining = new Date(el.dataset.nextDispatch).getTime() - Date.now();
+      if (remaining <= 0) { el.textContent = 'Data alcançada · aguardando aprovação'; return; }
+      const totalSeconds = Math.floor(remaining / 1000);
+      const days = Math.floor(totalSeconds / 86400);
+      const hours = Math.floor((totalSeconds % 86400) / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      el.textContent = `Disponível em ${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    });
   }
 
   function populateQueueCampaignFilter() {
@@ -441,16 +506,138 @@
     });
   }
 
+  async function setCampaignPaused(campaignId, paused) {
+    try {
+      await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/${paused ? 'pause' : 'resume'}`, { method: 'POST' });
+      toast(paused ? 'Campanha pausada.' : 'Campanha retomada.');
+      await Promise.all([loadData(), loadQueue()]);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function archiveCampaign(campaignId, name) {
+    if (!await uiConfirm({ title: 'Arquivar campanha?', message: `O histórico de “${name}” será preservado.`, confirmLabel: 'Arquivar' })) return;
+    try {
+      await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/archive`, { method: 'POST' });
+      toast('Campanha arquivada.');
+      await Promise.all([loadData(), loadQueue()]);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function deleteCampaign(campaignId, name) {
+    if (!await uiConfirm({ title: 'Excluir campanha?', message: `“${name}” será removida definitivamente.`, confirmLabel: 'Excluir', danger: true })) return;
+    try {
+      await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}`, { method: 'DELETE' });
+      toast('Campanha excluída.');
+      await Promise.all([loadData(), loadQueue()]);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function openCampaignRecipients(campaignId, campaignName) {
+    try {
+      const result = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/recipients`);
+      state.campaignRecipients = result.data || [];
+      state.campaignRecipientsName = campaignName;
+      $('#campaignRecipientsTitle').textContent = campaignName;
+      $('#campaignRecipientSearch').value = '';
+      renderCampaignRecipients();
+      $('#campaignRecipientsModal').classList.add('is-active');
+      $('#modalBackdrop').classList.remove('is-hidden');
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function filteredCampaignRecipients() {
+    const search = ($('#campaignRecipientSearch')?.value || '').trim().toLowerCase();
+    if (!search) return state.campaignRecipients;
+    return state.campaignRecipients.filter((r) => `${r.full_name || ''} ${r.email || ''} ${r.phone_e164 || ''}`.toLowerCase().includes(search));
+  }
+
+  function renderCampaignRecipients() {
+    const contacts = filteredCampaignRecipients();
+    $('#campaignRecipientsTableBody').innerHTML = contacts.map((r) => `<tr><td>${escapeHtml(r.full_name)}</td><td>${escapeHtml(r.email || '—')}</td><td>${escapeHtml(r.phone_e164 || '—')}</td><td><span class="status-badge ${escapeHtml(deliveryStatusClass[r.delivery_status] || 'neutral')}">${escapeHtml(deliveryStatusLabels[r.delivery_status] || r.delivery_status)}</span></td></tr>`).join('');
+    $('#campaignRecipientsEmpty').classList.toggle('is-hidden', contacts.length > 0);
+  }
+
+  function downloadCampaignRecipients() {
+    const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const rows = [['Nome', 'E-mail', 'Telefone', 'Status'], ...filteredCampaignRecipients().map((r) => [r.full_name, r.email, r.phone_e164, deliveryStatusLabels[r.delivery_status] || r.delivery_status])];
+    const blob = new Blob([`\ufeff${rows.map((row) => row.map(quote).join(';')).join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${state.campaignRecipientsName || 'campanha'}-contatos.csv`.replace(/[^a-z0-9._-]+/gi, '-');
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
   function renderProducts() {
     const search = $('#productSearch').value.trim().toLowerCase();
     const products = state.products.filter((product) => `${product.name} ${product.sku} ${product.category}`.toLowerCase().includes(search));
     $('#productGrid').innerHTML = products.map((product) => `
       <article class="product-card">
-        <div class="product-top"><div class="product-icon">◇</div><span class="status-badge ${product.active ? 'success' : 'neutral'}">${product.active ? 'Ativo' : 'Inativo'}</span></div>
-        <h3>${escapeHtml(product.name)}</h3><span class="sku">${escapeHtml(product.sku)} · ${escapeHtml(product.category)}</span>
-        <div class="product-price"><span>PREÇO<strong>${money(product.current_price_cents)}</strong></span><span>CUSTO EST.<small>${product.current_estimated_unit_cost_cents == null ? 'Não informado' : money(product.current_estimated_unit_cost_cents)}</small></span></div>
+        <div class="product-top">
+          <div class="product-icon">◇</div>
+          <span class="status-badge ${product.active ? 'success' : 'neutral'}">${product.active ? 'Ativo' : 'Inativo'}</span>
+        </div>
+        <h3>${escapeHtml(product.name)}</h3>
+        <span class="sku">${escapeHtml(product.sku)} · ${escapeHtml(product.category)}</span>
+        <div class="product-price">
+          <span>PREÇO<strong>${money(product.current_price_cents)}</strong></span>
+          <span>CUSTO EST.<small>${product.current_estimated_unit_cost_cents == null ? 'Não informado' : money(product.current_estimated_unit_cost_cents)}</small></span>
+        </div>
       </article>`).join('');
     $('#productsEmpty').classList.toggle('is-hidden', products.length > 0);
+  }
+
+  function openEditProduct(product) {
+    const form = $('#productForm');
+    form.productId.value = product.id;
+    form.sku.value = product.sku;
+    form.sku.disabled = true;
+    form.category.value = product.category;
+    form.name.value = product.name;
+    form.price.value = (product.current_price_cents / 100).toFixed(2);
+    form.cost.value = product.current_estimated_unit_cost_cents != null ? (product.current_estimated_unit_cost_cents / 100).toFixed(2) : '';
+    form.costSource.value = product.cost_source ?? '';
+    const priceInput = form.price;
+    if (product.has_sales) {
+      priceInput.disabled = true;
+      priceInput.title = 'Produto com vendas registradas — preço não pode ser alterado';
+      $('#productPriceLabel').style.opacity = '0.5';
+    } else {
+      priceInput.disabled = false;
+      priceInput.title = '';
+      $('#productPriceLabel').style.opacity = '';
+    }
+    $('#productModalEyebrow').textContent = 'EDITAR ITEM';
+    $('#productModalTitle').textContent = 'Editar produto';
+    const deleteBtn = $('#deleteProductBtn');
+    if (deleteBtn) {
+      deleteBtn.style.display = '';
+      deleteBtn.dataset.productId = product.id;
+      deleteBtn.dataset.productName = product.name;
+    }
+    openModal('product');
+  }
+
+  async function deleteProductAction(productId, productName) {
+    if (!await uiConfirm({ title: 'Excluir produto?', message: `“${productName}” será excluído. Se houver vendas, ele será apenas desativado.`, confirmLabel: 'Excluir', danger: true })) return;
+    try {
+      const result = await api(`/api/v1/products/${encodeURIComponent(productId)}`, { method: 'DELETE' });
+      closeModal();
+      await loadData();
+      toast(result.data?.deactivated ? `"${productName}" desativado (tem vendas registradas).` : `"${productName}" excluído.`);
+    } catch (err) {
+      toast('Erro ao excluir: ' + err.message, 'error');
+    }
+  }
+
+  async function loadCategories() {
+    try {
+      const result = await api('/api/v1/products/categories');
+      const datalist = $('#categoriesList');
+      if (datalist && result.data) {
+        datalist.innerHTML = result.data.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+      }
+    } catch { /* ignore */ }
   }
 
   function navigate(view) {
@@ -478,6 +665,25 @@
     modal.classList.add('is-active');
     $('#modalBackdrop').classList.remove('is-hidden');
     document.body.style.overflow = 'hidden';
+    if (type === 'contact') {
+      const form = $('#contactForm');
+      form.reset();
+      form.contactId.value = '';
+      form.origin.value = 'manual';
+      form.stage.value = 'prospect';
+    }
+    if (type === 'campaign') {
+      const form = $('#campaignForm');
+      form.reset();
+      form.includeConverted.checked = true;
+      form.immediateDispatch.checked = true;
+      form.recurrenceDays.value = 30;
+      updateDispatchModeUI(false);
+      updateScheduleKindUI(false);
+      updateCampaignTimingUI();
+      resetAssetUpload();
+      renderCampaignPreview();
+    }
     if (type === 'consent') {
       $('[name="contactId"]', modal).value = detail.id;
       $('#consentContactName').textContent = detail.name;
@@ -486,6 +692,14 @@
   }
 
   function closeModal() {
+    if (state.confirmResolver) { finishUiConfirm(false); return; }
+    state.editingContactId = null;
+    const contactModal = $('#contactModal');
+    if (contactModal) {
+      contactModal.querySelector('.eyebrow').textContent = 'NOVO REGISTRO';
+      $('#contactModalTitle').textContent = 'Adicionar contato';
+      contactModal.querySelector('button[type="submit"]').textContent = 'Salvar contato';
+    }
     state.editingCampaignId = null;
     const cm = $('#campaignModal');
     if (cm) {
@@ -493,6 +707,19 @@
       cm.querySelector('#campaignModalTitle').textContent = 'Criar campanha';
       const submitBtn = cm.querySelector('button[type="submit"]');
       if (submitBtn) submitBtn.textContent = 'Criar campanha';
+    }
+    // Reset product modal to create mode
+    const productForm = $('#productForm');
+    if (productForm) {
+      productForm.productId.value = '';
+      productForm.sku.disabled = false;
+      productForm.price.disabled = false;
+      productForm.price.title = '';
+      $('#productPriceLabel').style.opacity = '';
+      $('#productModalEyebrow').textContent = 'NOVO ITEM';
+      $('#productModalTitle').textContent = 'Adicionar produto';
+      const deleteBtn = $('#deleteProductBtn');
+      if (deleteBtn) deleteBtn.style.display = 'none';
     }
     $('#modalBackdrop').classList.add('is-hidden');
     $$('.modal').forEach((node) => node.classList.remove('is-active'));
@@ -514,19 +741,117 @@
       ...(values.notes.trim() ? { notes: values.notes.trim() } : {}),
       tags: values.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
     };
-    setButtonLoading(submit, true);
+    const editingId = state.editingContactId;
+    setButtonLoading(submit, true, editingId ? 'Salvando...' : 'Salvando...');
     try {
-      await api('/api/v1/contacts', { method: 'POST', body: JSON.stringify(payload) });
+      await api(editingId ? `/api/v1/contacts/${encodeURIComponent(editingId)}` : '/api/v1/contacts', { method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
       form.reset();
       $('[name="origin"]', form).value = 'manual';
       $('[name="stage"]', form).value = 'prospect';
       closeModal();
       await loadData();
-      toast('Contato criado com sucesso.');
+      toast(editingId ? 'Contato atualizado.' : 'Contato criado com sucesso.');
     } catch (err) {
       error.textContent = err.message;
     } finally {
       setButtonLoading(submit, false);
+    }
+  }
+
+  function openEditContact(contact) {
+    state.editingContactId = contact.id;
+    const modal = $('#contactModal');
+    const form = $('#contactForm');
+    form.reset();
+    modal.querySelector('.eyebrow').textContent = 'EDITAR CONTATO';
+    $('#contactModalTitle').textContent = 'Editar contato';
+    modal.querySelector('button[type="submit"]').textContent = 'Salvar alterações';
+    form.contactId.value = contact.id;
+    form.fullName.value = contact.full_name || '';
+    form.phone.value = contact.phone_e164 || '';
+    form.email.value = contact.email || '';
+    form.origin.value = contact.origin || 'manual';
+    form.stage.value = contact.stage || 'prospect';
+    let tags = contact.tags_json;
+    if (typeof tags === 'string') { try { tags = JSON.parse(tags); } catch { tags = []; } }
+    if (!Array.isArray(tags)) tags = [];
+    form.tags.value = tags.join(', ');
+    form.notes.value = contact.notes || '';
+    modal.classList.add('is-active');
+    $('#modalBackdrop').classList.remove('is-hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  async function archiveContactAction(contactId, name) {
+    if (!await uiConfirm({ title: 'Arquivar contato?', message: `“${name}” ficará inativo e fora dos próximos envios.`, confirmLabel: 'Arquivar' })) return;
+    try {
+      await api(`/api/v1/contacts/${encodeURIComponent(contactId)}/archive`, { method: 'POST' });
+      await loadData();
+      toast('Contato arquivado.');
+    } catch (err) { toast(`Erro ao arquivar: ${err.message}`, 'error'); }
+  }
+
+  async function deleteContactAction(contactId, name) {
+    if (!await uiConfirm({ title: 'Excluir contato?', message: `“${name}” e seus vínculos serão removidos. Esta ação não pode ser desfeita.`, confirmLabel: 'Excluir', danger: true })) return;
+    try {
+      await api(`/api/v1/contacts/${encodeURIComponent(contactId)}`, { method: 'DELETE' });
+      await loadData();
+      toast('Contato excluído.');
+    } catch (err) { toast(`Erro ao excluir: ${err.message}`, 'error'); }
+  }
+
+  function parseBulkContacts(text) {
+    const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines[0]?.toLowerCase().startsWith('nome;')) lines.shift();
+    return lines.slice(0, 500).map((line) => {
+      const [fullName = '', phone = '', email = '', origin = 'manual', stage = 'prospect', tags = ''] = line.split(';').map((value) => value.trim());
+      return {
+        fullName, origin: origin || 'manual', stage: stage || 'prospect',
+        ...(phone ? { phone } : {}), ...(email ? { email } : {}),
+        tags: tags.split('|').map((tag) => tag.trim()).filter(Boolean),
+      };
+    }).filter((contact) => contact.fullName.length >= 2);
+  }
+
+  async function submitBulkContacts(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = $('button[type="submit"]', form);
+    const error = $('[data-form-error]', form);
+    error.textContent = '';
+    const contacts = parseBulkContacts($('#bulkContactsText').value);
+    if (!contacts.length) { error.textContent = 'Cole ou selecione ao menos uma linha válida.'; return; }
+    setButtonLoading(submit, true, 'Importando...');
+    try {
+      const result = await api('/api/v1/contacts/bulk', { method: 'POST', body: JSON.stringify({ contacts }) });
+      const created = result.data?.created?.length ?? 0;
+      const errors = result.data?.errors?.length ?? 0;
+      form.reset();
+      closeModal();
+      await loadData();
+      toast(`${created} contato(s) importado(s)${errors ? `; ${errors} ignorado(s)` : ''}.`, errors ? 'error' : 'success');
+    } catch (err) { error.textContent = err.message; }
+    finally { setButtonLoading(submit, false); }
+  }
+
+  async function grantMissingConsents() {
+    const button = $('#grantMissingConsentsBtn');
+    const confirmed = await uiConfirm({
+      title: 'Autorizar consentimentos pendentes?',
+      message: 'Marketing e atualizações de pedidos serão autorizados somente para contatos sem registro. Revogações, bloqueados e arquivados serão preservados.',
+      confirmLabel: 'Autorizar pendentes',
+    });
+    if (!confirmed) return;
+    setButtonLoading(button, true, 'Atualizando...');
+    try {
+      const result = await api('/api/v1/contacts/consents/bulk-defaults', { method: 'POST' });
+      await loadData();
+      const contacts = result.data?.contacts_updated ?? 0;
+      toast(contacts ? `${contacts} contato(s) regularizado(s).` : 'Nenhum consentimento pendente.');
+    } catch (err) {
+      toast(`Erro ao atualizar consentimentos: ${err.message}`, 'error');
+    } finally {
+      setButtonLoading(button, false);
     }
   }
 
@@ -537,19 +862,35 @@
     const error = $('[data-form-error]', form);
     error.textContent = '';
     const values = Object.fromEntries(new FormData(form));
-    const payload = {
-      sku: values.sku.trim(), name: values.name.trim(), category: values.category.trim(),
-      currentPriceCents: Math.round(Number(values.price) * 100),
-      ...(values.cost ? { currentEstimatedUnitCostCents: Math.round(Number(values.cost) * 100) } : {}),
-      ...(values.costSource.trim() ? { costSource: values.costSource.trim() } : {}),
-    };
+    const isEdit = !!values.productId;
     setButtonLoading(submit, true);
     try {
-      await api('/api/v1/products', { method: 'POST', body: JSON.stringify(payload) });
-      form.reset();
-      closeModal();
-      await loadData();
-      toast('Produto criado com sucesso.');
+      if (isEdit) {
+        const payload = {
+          name: values.name.trim(),
+          category: values.category.trim(),
+          ...(!form.price.disabled ? { currentPriceCents: Math.round(Number(values.price) * 100) } : {}),
+          ...(values.cost ? { currentEstimatedUnitCostCents: Math.round(Number(values.cost) * 100) } : { currentEstimatedUnitCostCents: null }),
+          costSource: values.costSource.trim() || null,
+        };
+        await api(`/api/v1/products/${encodeURIComponent(values.productId)}`, { method: 'PUT', body: JSON.stringify(payload) });
+        form.reset();
+        closeModal();
+        await loadData();
+        toast('Produto atualizado.');
+      } else {
+        const payload = {
+          sku: values.sku.trim(), name: values.name.trim(), category: values.category.trim(),
+          currentPriceCents: Math.round(Number(values.price) * 100),
+          ...(values.cost ? { currentEstimatedUnitCostCents: Math.round(Number(values.cost) * 100) } : {}),
+          ...(values.costSource.trim() ? { costSource: values.costSource.trim() } : {}),
+        };
+        await api('/api/v1/products', { method: 'POST', body: JSON.stringify(payload) });
+        form.reset();
+        closeModal();
+        await loadData();
+        toast('Produto criado com sucesso.');
+      }
     } catch (err) {
       error.textContent = err.message;
     } finally {
@@ -578,8 +919,13 @@
       name: values.name.trim(), messageText: values.messageText.trim(),
       ...(values.objective?.trim() ? { objective: values.objective.trim() } : {}),
       ...(values.linkUrl?.trim() ? { linkUrl: values.linkUrl.trim() } : {}),
-      ...(assets.length ? { assets } : {}),
+      // Always send the asset list so editing can also remove a previous asset.
+      assets,
       dispatchMode: isSingle ? 'single' : 'standard',
+      scheduleKind: values.scheduleKind === 'recurring' ? 'recurring' : 'once',
+      immediateDispatch: values.immediateDispatch === 'on',
+      nextDispatchAt: values.immediateDispatch === 'on' ? null : (values.nextDispatchAt ? new Date(values.nextDispatchAt).toISOString() : null),
+      recurrenceDays: values.scheduleKind === 'recurring' ? Number(values.recurrenceDays || 30) : null,
       ...(isSingle ? {} : {
         minIntervalHours: Number(values.minIntervalHours),
         maxNotificationsPer30d: Number(values.maxNotificationsPer30d),
@@ -622,6 +968,13 @@
     f.messageText.value = campaign.message_text || '';
     f.linkUrl.value = campaign.link_url || '';
     f.dispatchMode.value = campaign.dispatch_mode || 'standard';
+    f.scheduleKind.value = campaign.schedule_kind || 'once';
+    f.immediateDispatch.checked = campaign.immediate_dispatch ?? true;
+    f.nextDispatchAt.value = campaign.next_dispatch_at ? new Date(new Date(campaign.next_dispatch_at).getTime() - new Date(campaign.next_dispatch_at).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+    f.recurrenceDays.value = campaign.recurrence_days || 30;
+    updateScheduleKindUI(f.scheduleKind.value === 'recurring');
+    updateCampaignTimingUI();
+    renderCampaignPreview();
     updateDispatchModeUI(campaign.dispatch_mode === 'single');
     f.minIntervalHours.value = campaign.min_interval_hours ?? 168;
     f.maxNotificationsPer30d.value = campaign.max_notifications_per_30d ?? 4;
@@ -640,12 +993,42 @@
       $('#assetThumb').src = asset.url || '';
       $('#assetFileName').textContent = asset.url?.split('/').pop() || 'arquivo';
     }
+    renderCampaignPreview();
     $('#modalBackdrop').classList.remove('is-hidden');
     modal.classList.add('is-active');
   }
 
+  function updateScheduleKindUI(recurring) {
+    $('#recurrenceDaysField').classList.toggle('is-hidden', !recurring);
+    $('#campaignForm').recurrenceDays.required = recurring;
+  }
+
+  function updateCampaignTimingUI() {
+    const form = $('#campaignForm');
+    const immediate = form.immediateDispatch.checked;
+    form.nextDispatchAt.disabled = immediate;
+    form.nextDispatchAt.required = !immediate;
+    $('#nextDispatchAtField').classList.toggle('is-disabled', immediate);
+  }
+
+  function renderCampaignPreview() {
+    const form = $('#campaignForm');
+    if (!form) return;
+    const link = form.linkUrl.value.trim();
+    let message = form.messageText.value.trim() || 'Sua mensagem aparecerá aqui.';
+    if (link) {
+      message = message.replaceAll('{{app_url}}', link);
+      if (!message.includes(link)) message = `${message}\n\n${link}`;
+    }
+    $('#campaignPreviewText').textContent = message;
+    const media = $('#campaignPreviewMedia');
+    const assetUrl = form.assetUrl.value;
+    media.classList.toggle('is-hidden', !assetUrl);
+    media.style.backgroundImage = assetUrl ? `url("${assetUrl.replace(/"/g, '%22')}")` : '';
+  }
+
   async function approveCampaign(campaignId, campaignName) {
-    if (!confirm(`Aprovar campanha "${campaignName}"?\n\nIsso vai enfileirar os destinatários elegíveis para envio pelo n8n. Esta ação não pode ser desfeita sem cancelar a campanha.`)) return;
+    if (!await uiConfirm({ title: 'Aprovar campanha?', message: `“${campaignName}” será colocada na fila e seguirá o horário configurado.`, confirmLabel: 'Aprovar campanha' })) return;
     try {
       const result = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/approve`, { method: 'POST' });
       await loadData();
@@ -657,7 +1040,7 @@
   }
 
   async function cancelCampaign(campaignId, campaignName) {
-    if (!confirm(`Cancelar campanha "${campaignName}"?\n\nTodos os envios pendentes serão cancelados.`)) return;
+    if (!await uiConfirm({ title: 'Cancelar campanha?', message: `Todos os envios pendentes de “${campaignName}” serão cancelados.`, confirmLabel: 'Cancelar campanha', danger: true })) return;
     try {
       const result = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/cancel`, { method: 'POST' });
       await loadData();
@@ -665,6 +1048,23 @@
       closeModal();
     } catch (err) {
       toast(`Erro ao cancelar: ${err.message}`, 'error');
+    }
+  }
+
+  async function dispatchCampaign(campaignId, campaignName) {
+    if (!await uiConfirm({ title: 'Disparar agora?', message: `Os destinatários ainda na fila de “${campaignName}” serão processados agora.`, confirmLabel: 'Disparar agora' })) return;
+    try {
+      const result = await api(`/api/v1/campaigns/${encodeURIComponent(campaignId)}/dispatch`, { method: 'POST' });
+      await Promise.all([loadData(), loadQueue()]);
+      if (result.data.claimed === 0) {
+        toast('Nenhum destinatário aguardando envio.');
+      } else if (result.data.failed > 0) {
+        toast(`Envio concluído: ${result.data.sent} enviado(s), ${result.data.failed} falha(s).`, 'error');
+      } else {
+        toast(`${result.data.sent} destinatário(s) enviado(s) com sucesso.`);
+      }
+    } catch (err) {
+      toast(`Erro ao enviar campanha: ${err.message}`, 'error');
     }
   }
 
@@ -856,6 +1256,7 @@
     $('#assetThumb').src = '';
     $('#assetHint').classList.add('is-hidden');
     $('#assetUploadArea').classList.remove('is-uploading', 'has-asset');
+    renderCampaignPreview();
   }
 
   async function handleAssetFileChange() {
@@ -889,6 +1290,7 @@
       $('#assetPreview').classList.remove('is-hidden');
       $('#assetHint').classList.remove('is-hidden');
       area.classList.add('has-asset');
+      renderCampaignPreview();
     } catch (err) {
       toast(err.message, 'error');
     } finally {
@@ -934,6 +1336,8 @@
     }
   }
 
+  let _foodSynced = false;
+
   async function loadSamJoeFoodConfig() {
     try {
       const result = await api('/api/v1/integrations/samjoe-food');
@@ -941,26 +1345,35 @@
       const badge = $('#samjoeFoodBadge');
       const lastEvent = $('#samjoeFoodLastEvent');
       const dot = $('#samjoeFoodHealthDot');
+      const toggleRow = $('#foodToggleRow');
+      const toggle = $('#foodActiveToggle');
+      const connectBtn = $('#foodConnectBtn');
       if (!cfg) {
-        badge.textContent = 'Não configurado';
-        badge.className = 'status-badge neutral';
-        lastEvent.classList.add('is-hidden');
+        if (badge) { badge.textContent = 'Não configurado'; badge.className = 'status-badge neutral'; }
+        if (lastEvent) lastEvent.classList.add('is-hidden');
         if (dot) dot.className = 'health-dot';
-      } else if (cfg.status === 'active') {
-        badge.textContent = 'Ativo';
-        badge.className = 'status-badge success';
-        if (dot) dot.className = 'health-dot ok';
-        if (cfg.last_event_at) {
-          lastEvent.textContent = `Último evento: ${new Date(cfg.last_event_at).toLocaleString('pt-BR')}`;
-          lastEvent.classList.remove('is-hidden');
-        } else {
-          lastEvent.classList.add('is-hidden');
-        }
+        if (toggleRow) toggleRow.classList.add('is-hidden');
+        if (connectBtn) { connectBtn.style.display = ''; connectBtn.textContent = 'Conectar loja'; }
       } else {
-        badge.textContent = 'Desativado';
-        badge.className = 'status-badge warning';
-        if (dot) dot.className = 'health-dot warn';
-        lastEvent.classList.add('is-hidden');
+        const isActive = cfg.status === 'active';
+        if (badge) { badge.textContent = isActive ? 'Ativo' : 'Inativo'; badge.className = isActive ? 'status-badge success' : 'status-badge neutral'; }
+        if (dot) dot.className = isActive ? 'health-dot ok' : 'health-dot';
+        if (toggleRow) toggleRow.classList.remove('is-hidden');
+        if (toggle) toggle.checked = isActive;
+        if (connectBtn) { connectBtn.style.display = ''; connectBtn.textContent = 'Reconectar'; }
+        if (lastEvent) {
+          if (cfg.last_event_at) {
+            lastEvent.textContent = `Último evento: ${new Date(cfg.last_event_at).toLocaleString('pt-BR')}`;
+            lastEvent.classList.remove('is-hidden');
+          } else {
+            lastEvent.classList.add('is-hidden');
+          }
+        }
+        // auto-resync webhook URL silently once per session
+        if (isActive && cfg.food_app_url && !_foodSynced) {
+          _foodSynced = true;
+          api('/api/v1/integrations/samjoe-food/resync', { method: 'POST' }).catch(() => {});
+        }
       }
     } catch {
       // integration not configured yet — ignore 404
@@ -971,7 +1384,7 @@
   let waStatusPollTimer = null;
 
   function waShowStep(step) {
-    ['waStepConfig', 'waStepLoading', 'waStepQr', 'waStepConnected', 'waStepError'].forEach((id) => {
+    ['waStepReady', 'waStepLoading', 'waStepQr', 'waStepConnected', 'waStepError'].forEach((id) => {
       const el = $('#' + id);
       if (el) el.classList.toggle('is-hidden', id !== step);
     });
@@ -980,48 +1393,15 @@
   async function openWaModal() {
     $('#waModal').classList.add('is-active');
     $('#waModalBackdrop').classList.remove('is-hidden');
-    let evolutionUrl = '';
-    let instanceName = 'samjoe';
+    waShowStep('waStepLoading');
     try {
-      const cfg = await api('/api/v1/integrations/whatsapp/config');
-      if (cfg.data) {
-        evolutionUrl = cfg.data.evolutionUrl || '';
-        instanceName = cfg.data.instanceName || 'samjoe';
+      const result = await api('/api/v1/integrations/whatsapp/status');
+      if (result.data?.state === 'open') {
+        waShowStep('waStepConnected');
+        return;
       }
-    } catch { /* ignore */ }
-    if ($('#waApiUrlInput')) $('#waApiUrlInput').value = evolutionUrl;
-    if ($('#waInstanceInput')) $('#waInstanceInput').value = instanceName;
-    if ($('#waApiUrlInputErr')) $('#waApiUrlInputErr').value = evolutionUrl;
-    if ($('#waInstanceInputErr')) $('#waInstanceInputErr').value = instanceName;
-    if ($('#waSetupUrlInput')) $('#waSetupUrlInput').value = evolutionUrl;
-    if ($('#waSetupInstanceInput')) $('#waSetupInstanceInput').value = instanceName;
-    const needsSetup = !evolutionUrl || evolutionUrl === 'http://localhost:8081';
-    if (needsSetup) {
-      waShowStep('waStepConfig');
-    } else {
-      waShowStep('waStepLoading');
-      await waLoadQr();
-    }
-  }
-
-  async function saveWaSetupConfig() {
-    const url = $('#waSetupUrlInput')?.value.trim() || '';
-    const instance = $('#waSetupInstanceInput')?.value.trim() || 'samjoe';
-    if (!url) { toast('Informe a URL da Evolution API.', 'error'); return; }
-    try {
-      await api('/api/v1/integrations/whatsapp/config', {
-        method: 'PUT',
-        body: JSON.stringify({ evolutionUrl: url, instanceName: instance }),
-      });
-      if ($('#waApiUrlInput')) $('#waApiUrlInput').value = url;
-      if ($('#waInstanceInput')) $('#waInstanceInput').value = instance;
-      if ($('#waApiUrlInputErr')) $('#waApiUrlInputErr').value = url;
-      if ($('#waInstanceInputErr')) $('#waInstanceInputErr').value = instance;
-      waShowStep('waStepLoading');
-      await waLoadQr();
-    } catch (err) {
-      toast('Erro ao salvar: ' + err.message, 'error');
-    }
+    } catch { /* ignore, proceed to ready */ }
+    waShowStep('waStepReady');
   }
 
   function closeWaModal() {
@@ -1041,9 +1421,11 @@
         // Fallback: render code as text (rare)
         $('#waQrImage').alt = code;
       } else {
-        waShowStep('waStepError');
-        $('#waError').textContent = 'QR code não disponível. A instância pode já estar conectada.';
         await waCheckIfAlreadyConnected();
+        if ($('#waStepConnected').classList.contains('is-hidden')) {
+          waShowStep('waStepError');
+          $('#waError').textContent = 'Não foi possível gerar o QR code. Tente novamente em alguns segundos.';
+        }
         return;
       }
       waShowStep('waStepQr');
@@ -1051,7 +1433,7 @@
       waStartStatusPolling();
     } catch (err) {
       waShowStep('waStepError');
-      $('#waError').textContent = err.message || 'Não foi possível obter o QR code.';
+      $('#waError').textContent = 'Não foi possível conectar. Verifique sua conexão e tente novamente.';
     }
   }
 
@@ -1080,42 +1462,13 @@
     } catch { /* ignore */ }
   }
 
-  async function saveWaConfig() {
-    const url = $('#waApiUrlInput')?.value.trim() || 'http://localhost:8081';
-    const instance = $('#waInstanceInput')?.value.trim() || 'samjoe';
-    try {
-      await api('/api/v1/integrations/whatsapp/config', {
-        method: 'PUT',
-        body: JSON.stringify({ evolutionUrl: url, instanceName: instance }),
-      });
-      if (waStatusPollTimer) { clearInterval(waStatusPollTimer); waStatusPollTimer = null; }
-      waShowStep('waStepLoading');
-      await waLoadQr();
-    } catch (err) {
-      toast('Erro ao salvar: ' + err.message, 'error');
-    }
-  }
-
-  async function saveWaConfigFromError() {
-    const url = $('#waApiUrlInputErr')?.value.trim() || 'http://localhost:8081';
-    const instance = $('#waInstanceInputErr')?.value.trim() || 'samjoe';
-    // Sync values to advanced panel too
-    if ($('#waApiUrlInput')) $('#waApiUrlInput').value = url;
-    if ($('#waInstanceInput')) $('#waInstanceInput').value = instance;
-    try {
-      await api('/api/v1/integrations/whatsapp/config', {
-        method: 'PUT',
-        body: JSON.stringify({ evolutionUrl: url, instanceName: instance }),
-      });
-      waShowStep('waStepLoading');
-      await waLoadQr();
-    } catch (err) {
-      toast('Erro ao salvar: ' + err.message, 'error');
-    }
+  async function waStartConnect() {
+    waShowStep('waStepLoading');
+    await waLoadQr();
   }
 
   async function disconnectWhatsApp() {
-    if (!confirm('Desconectar o WhatsApp desta instância?')) return;
+    if (!await uiConfirm({ title: 'Desconectar WhatsApp?', message: 'A instância deixará de enviar e receber mensagens até ser conectada novamente.', confirmLabel: 'Desconectar', danger: true })) return;
     try {
       await api('/api/v1/integrations/whatsapp/disconnect', { method: 'DELETE' });
       toast('WhatsApp desconectado.');
@@ -1123,23 +1476,6 @@
     } catch (err) {
       toast('Erro: ' + err.message, 'error');
     }
-  }
-
-  function openN8nModal() {
-    $('#n8nApiUrlInput').value = localStorage.getItem('n8nApiUrl') || '';
-    $('#n8nModal').classList.add('is-active');
-    $('#n8nModalBackdrop').classList.remove('is-hidden');
-  }
-  function closeN8nModal() {
-    $('#n8nModal').classList.remove('is-active');
-    $('#n8nModalBackdrop').classList.add('is-hidden');
-  }
-  async function saveN8nConfig() {
-    const url = $('#n8nApiUrlInput').value.trim() || 'http://localhost:5679';
-    localStorage.setItem('n8nApiUrl', url);
-    closeN8nModal();
-    toast('Configuração de automações salva.');
-    checkN8nHealth();
   }
 
   function openSamJoeFoodModal() {
@@ -1174,6 +1510,8 @@
   // ─── SamJoE Food auto-detect & wizard ────────────────────────────────────
 
   async function detectSamJoeFood() {
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (!isLocal) return;
     const candidates = ['http://localhost:3000', 'http://localhost:3001'];
     for (const url of candidates) {
       try {
@@ -1199,10 +1537,16 @@
     $('#foodConnectStepForm').classList.remove('is-hidden');
     $('#foodConnectStepSuccess').classList.add('is-hidden');
     $('#foodConnectError').classList.add('is-hidden');
+    $('#foodConnectModal').classList.add('is-active');
     $('#foodConnectModalBackdrop').classList.remove('is-hidden');
+    // pre-fill saved URL
+    api('/api/v1/integrations/samjoe-food').then((r) => {
+      if (r?.data?.food_app_url) $('#foodAppUrlInput').value = r.data.food_app_url;
+    }).catch(() => {});
   }
 
   function closeFoodConnectModal() {
+    $('#foodConnectModal').classList.remove('is-active');
     $('#foodConnectModalBackdrop').classList.add('is-hidden');
   }
 
@@ -1210,7 +1554,13 @@
     const btn = $('#doFoodConnectBtn');
     const error = $('#foodConnectError');
     const urlInput = $('#foodAppUrlInput');
-    const foodAppUrl = urlInput.value.trim() || 'http://localhost:3000';
+    const foodAppUrl = urlInput.value.trim();
+    if (!foodAppUrl) {
+      error.textContent = 'Informe o endereço público da loja SamJoE Food.';
+      error.classList.remove('is-hidden');
+      urlInput.focus();
+      return;
+    }
     error.classList.add('is-hidden');
     setButtonLoading(btn, true, 'Conectando…');
     try {
@@ -1377,6 +1727,7 @@
     $('[data-form-error]', form).textContent = '';
     $('#audienceEvalResult').classList.add('is-hidden');
     $('#audienceEvalResult').innerHTML = '';
+    state.audienceSelectedContactIds = new Set(audience?.rules?.contactIds || []);
     const isEdit = Boolean(audience);
     $('#audienceModalEyebrow').textContent = isEdit ? 'EDITAR PÚBLICO' : 'NOVO PÚBLICO';
     $('#audienceModalTitle').textContent = isEdit ? 'Editar público' : 'Criar público';
@@ -1398,9 +1749,23 @@
       form.ruleNotEngagedDays.value = r.notEngagedDays ?? '';
     }
     renderProductPicker();
+    $('#audienceContactSearch').value = '';
+    renderAudienceContactPicker();
     modal.classList.add('is-active');
     $('#modalBackdrop').classList.remove('is-hidden');
     document.body.style.overflow = 'hidden';
+  }
+
+  function renderAudienceContactPicker() {
+    const search = ($('#audienceContactSearch')?.value || '').trim().toLowerCase();
+    const contacts = state.contacts.filter((c) => !c.archived_at && (!search || `${c.full_name || ''} ${c.email || ''} ${c.phone_e164 || ''}`.toLowerCase().includes(search)));
+    $('#audienceContactList').innerHTML = contacts.map((c) => `<label class="audience-contact-item"><input type="checkbox" value="${c.id}" ${state.audienceSelectedContactIds.has(c.id) ? 'checked' : ''} /><span><strong>${escapeHtml(c.full_name)}</strong><small>${escapeHtml(c.email || 'Sem e-mail')} · ${escapeHtml(c.phone_e164 || 'Sem telefone')}</small></span></label>`).join('') || '<p class="muted">Nenhum contato encontrado.</p>';
+    $('#audienceSelectedCount').textContent = `${state.audienceSelectedContactIds.size} selecionado${state.audienceSelectedContactIds.size === 1 ? '' : 's'}`;
+    $$('#audienceContactList input[type="checkbox"]').forEach((input) => input.addEventListener('change', () => {
+      if (input.checked) state.audienceSelectedContactIds.add(input.value);
+      else state.audienceSelectedContactIds.delete(input.value);
+      renderAudienceContactPicker();
+    }));
   }
 
   function renderProductPicker() {
@@ -1427,6 +1792,7 @@
   function buildAudienceRulesFromForm(form) {
     const split = (s) => (s || '').split(',').map((x) => x.trim()).filter(Boolean);
     const rules = {};
+    if (state.audienceSelectedContactIds.size) rules.contactIds = [...state.audienceSelectedContactIds];
     const stages = split(form.ruleStages.value); if (stages.length) rules.stages = stages;
     const origins = split(form.ruleOrigins.value); if (origins.length) rules.origins = origins;
     const tags = split(form.ruleTags.value); if (tags.length) rules.tags = tags;
@@ -1511,16 +1877,21 @@
     $$('[data-open]').forEach((button) => button.addEventListener('click', () => openModal(button.dataset.open)));
     $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
     $('#modalBackdrop').addEventListener('click', (event) => { if (event.target === event.currentTarget) closeModal(); });
+    $('#confirmModalCancel').addEventListener('click', () => finishUiConfirm(false));
+    $('#confirmModalAccept').addEventListener('click', () => finishUiConfirm(true));
     document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal(); });
     $('#contactSearch').addEventListener('input', renderContacts);
     $('#stageFilter').addEventListener('change', renderContacts);
+    $('#showArchivedContacts').addEventListener('change', renderContacts);
     $('#productSearch').addEventListener('input', renderProducts);
     $('#campaignDateFrom').addEventListener('change', renderCampaigns);
     $('#campaignDateTo').addEventListener('change', renderCampaigns);
+    $('#showArchivedCampaigns').addEventListener('change', renderCampaigns);
     $('#campaignDateClear').addEventListener('click', () => {
       $('#campaignDateFrom').value = '';
       $('#campaignDateTo').value = '';
-      $$('.filter-chip').forEach((el) => el.classList.remove('is-active'));
+      $$('.filter-chip').forEach((el) => el.classList.add('is-active'));
+      $('#showArchivedCampaigns').checked = false;
       renderCampaigns();
     });
     $('#campaignFilters').addEventListener('click', (e) => {
@@ -1540,15 +1911,49 @@
       loadQueue().catch(() => {});
     });
     $('#queueRefreshBtn').addEventListener('click', () => loadQueue().catch(() => {}));
+    $('#queueTableBody').addEventListener('click', (event) => {
+      const recipients = event.target.closest('[data-open-recipients]');
+      if (recipients) return openCampaignRecipients(recipients.dataset.openRecipients, recipients.dataset.campaignName);
+      const dispatch = event.target.closest('[data-queue-dispatch]');
+      if (dispatch) return dispatchCampaign(dispatch.dataset.queueDispatch, dispatch.dataset.campaignName);
+      const pause = event.target.closest('[data-queue-pause]');
+      if (pause) return setCampaignPaused(pause.dataset.queuePause, true);
+      const resume = event.target.closest('[data-queue-resume]');
+      if (resume) return setCampaignPaused(resume.dataset.queueResume, false);
+      const cancel = event.target.closest('[data-queue-cancel]');
+      if (cancel) return cancelCampaign(cancel.dataset.queueCancel, cancel.dataset.campaignName);
+    });
+    $('#campaignRecipientSearch').addEventListener('input', renderCampaignRecipients);
+    $('#downloadCampaignRecipientsBtn').addEventListener('click', downloadCampaignRecipients);
     $('#contactsTableBody').addEventListener('click', (event) => {
       const button = event.target.closest('[data-consent-id]');
-      if (button) openModal('consent', { id: button.dataset.consentId, name: button.dataset.consentName });
+      if (button) return openModal('consent', { id: button.dataset.consentId, name: button.dataset.consentName });
+      const edit = event.target.closest('[data-edit-contact]');
+      if (edit) {
+        const contact = state.contacts.find((item) => item.id === edit.dataset.editContact);
+        if (contact) openEditContact(contact);
+        return;
+      }
+      const archive = event.target.closest('[data-archive-contact]');
+      if (archive) return archiveContactAction(archive.dataset.archiveContact, archive.dataset.contactName);
+      const remove = event.target.closest('[data-delete-contact]');
+      if (remove) return deleteContactAction(remove.dataset.deleteContact, remove.dataset.contactName);
     });
     $('#campaignsTableBody').addEventListener('click', (event) => {
       const pf = event.target.closest('[data-preflight-id]');
       if (pf) return runPreflight(pf.dataset.preflightId, pf.dataset.preflightName);
       const ap = event.target.closest('[data-approve-id]');
       if (ap) return approveCampaign(ap.dataset.approveId, ap.dataset.approveName);
+      const dispatch = event.target.closest('[data-dispatch-id]');
+      if (dispatch) return dispatchCampaign(dispatch.dataset.dispatchId, dispatch.dataset.dispatchName);
+      const pause = event.target.closest('[data-pause-id]');
+      if (pause) return setCampaignPaused(pause.dataset.pauseId, true);
+      const resume = event.target.closest('[data-resume-id]');
+      if (resume) return setCampaignPaused(resume.dataset.resumeId, false);
+      const archive = event.target.closest('[data-archive-campaign-id]');
+      if (archive) return archiveCampaign(archive.dataset.archiveCampaignId, archive.dataset.campaignName);
+      const remove = event.target.closest('[data-delete-campaign-id]');
+      if (remove) return deleteCampaign(remove.dataset.deleteCampaignId, remove.dataset.campaignName);
       const ca = event.target.closest('[data-cancel-id]');
       if (ca) return cancelCampaign(ca.dataset.cancelId, ca.dataset.cancelName);
       const cl = event.target.closest('[data-clone-id]');
@@ -1574,11 +1979,29 @@
       }
     });
     $('#contactForm').addEventListener('submit', submitContact);
+    $('#grantMissingConsentsBtn').addEventListener('click', grantMissingConsents);
+    $('#openBulkContactsBtn').addEventListener('click', () => openModal('bulkContacts'));
+    $('#bulkContactsForm').addEventListener('submit', submitBulkContacts);
+    $('#bulkContactsFile').addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (file) $('#bulkContactsText').value = await file.text();
+    });
     $('#productForm').addEventListener('submit', submitProduct);
+    $('#deleteProductBtn').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      deleteProductAction(btn.dataset.productId, btn.dataset.productName);
+    });
+    $('#productGrid').addEventListener('click', (event) => {
+      const edit = event.target.closest('[data-edit-product]');
+      if (edit) {
+        const product = state.products.find((p) => p.id === edit.dataset.editProduct);
+        if (product) openEditProduct(product);
+      }
+    });
     $('#consentForm').addEventListener('submit', submitConsent);
     $('#campaignForm').addEventListener('submit', submitCampaign);
     $('#assetUploadArea').addEventListener('click', (e) => {
-      if (e.target.closest('#assetRemoveBtn')) return;
+      if (e.target.closest('#assetRemoveBtn, #assetFileInput')) return;
       $('#assetFileInput').click();
     });
     $('#assetRemoveBtn').addEventListener('click', (e) => {
@@ -1590,51 +2013,64 @@
     $('#waDisconnectBtn').addEventListener('click', disconnectWhatsApp);
     $$('[data-close-wa]').forEach((el) => el.addEventListener('click', closeWaModal));
     $('#waModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeWaModal(); });
-    $('#saveWaConfigBtn').addEventListener('click', saveWaConfig);
-    $('#waTryAgainBtn').addEventListener('click', saveWaConfigFromError);
-    $('#waSetupSaveBtn').addEventListener('click', saveWaSetupConfig);
-    $('#waAdvancedToggle').addEventListener('click', () => {
-      const adv = $('#waAdvancedConfig');
-      adv.classList.toggle('is-hidden');
-    });
-    $('#waAutomationToggle').addEventListener('change', async (e) => {
+    $('#waConnectBtn').addEventListener('click', waStartConnect);
+    $('#waTryAgainBtn').addEventListener('click', waStartConnect);
+    $('#realtimeAutomationToggle').addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
       try {
         await api('/api/v1/integrations/whatsapp/config', {
           method: 'PUT',
-          body: JSON.stringify({ automationEnabled: e.target.checked }),
+          body: JSON.stringify({ automationEnabled: enabled }),
         });
-        toast(e.target.checked ? 'Automação n8n ativada.' : 'Automação n8n desativada.');
+        const rDot = $('#n8nHealthDot');
+        const rText = $('#n8nHealthText');
+        const rBadge = $('#n8nBadge');
+        if (rDot) rDot.className = enabled ? 'health-dot ok' : 'health-dot';
+        if (rText) rText.textContent = enabled ? 'Ativo' : 'Inativo';
+        if (rBadge) { rBadge.textContent = enabled ? 'Ativo' : 'Inativo'; rBadge.className = enabled ? 'status-badge success' : 'status-badge neutral'; }
+        toast(enabled ? 'Respostas automáticas ativadas.' : 'Respostas automáticas desativadas.');
       } catch (err) {
         toast('Erro ao salvar: ' + err.message, 'error');
-        e.target.checked = !e.target.checked;
+        e.target.checked = !enabled;
       }
     });
-    $('#n8nConfigBtn').addEventListener('click', openN8nModal);
-    $$('[data-close-n8n]').forEach((el) => el.addEventListener('click', closeN8nModal));
-    $('#n8nModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeN8nModal(); });
-    $('#saveN8nConfigBtn').addEventListener('click', saveN8nConfig);
-    // SamJoE Food: "Configurar" opens the auto-connect wizard; advanced manual config via the existing modal is kept accessible
-    $('#openSamJoeFoodModalBtn').addEventListener('click', openFoodConnectModal);
-    $$('[data-close-samjoe-food]').forEach((el) => el.addEventListener('click', closeSamJoeFoodModal));
-    $('#samjoeFoodModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeSamJoeFoodModal(); });
-    $('#samjoeFoodForm').addEventListener('submit', submitSamJoeFoodForm);
-    // SamJoE Food auto-connect wizard
-    $('#samjoeFoodAutoConnectBtn').addEventListener('click', openFoodConnectModal);
+    // SamJoE Food toggle
+    $('#foodConnectBtn').addEventListener('click', openFoodConnectModal);
     $('#closeFoodConnectModalBtn').addEventListener('click', closeFoodConnectModal);
     $('#cancelFoodConnectBtn').addEventListener('click', closeFoodConnectModal);
     $('#doFoodConnectBtn').addEventListener('click', doFoodConnect);
-    $('#closeFoodConnectSuccessBtn').addEventListener('click', closeFoodConnectModal);
     $('#foodConnectModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeFoodConnectModal(); });
-    $('#copyWebhookUrlBtn').addEventListener('click', () => {
-      navigator.clipboard.writeText($('#foodWebhookUrlDisplay').value).then(() => toast('URL copiada.'));
-    });
-    $('#copyHmacBtn').addEventListener('click', () => {
-      navigator.clipboard.writeText($('#foodHmacDisplay').value).then(() => toast('Chave copiada.'));
+    $('#foodActiveToggle').addEventListener('change', async (e) => {
+      const active = e.target.checked;
+      try {
+        await api('/api/v1/integrations/samjoe-food', {
+          method: 'PUT',
+          body: JSON.stringify({ status: active ? 'active' : 'disabled' }),
+        });
+        const badge = $('#samjoeFoodBadge');
+        const dot = $('#samjoeFoodHealthDot');
+        if (badge) { badge.textContent = active ? 'Ativo' : 'Inativo'; badge.className = active ? 'status-badge success' : 'status-badge neutral'; }
+        if (dot) dot.className = active ? 'health-dot ok' : 'health-dot';
+        toast(active ? 'Integração ativada.' : 'Integração desativada.');
+      } catch (err) {
+        toast('Erro ao salvar: ' + err.message, 'error');
+        e.target.checked = !active;
+      }
     });
     $('#settingsForm').addEventListener('submit', saveSettings);
+    $('#realtimeConfigBtn').addEventListener('click', openRealtimeConfigModal);
+    $('#closeRealtimeConfigBtn').addEventListener('click', closeRealtimeConfigModal);
+    $('#cancelRealtimeConfigBtn').addEventListener('click', closeRealtimeConfigModal);
+    $('#saveRealtimeConfigBtn').addEventListener('click', saveRealtimeConfig);
+    $('#realtimeConfigModalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeRealtimeConfigModal(); });
 
     // Dispatch mode toggle
     $('#dispatchModeSelect').addEventListener('change', (e) => updateDispatchModeUI(e.target.value === 'single'));
+    $('#scheduleKindSelect').addEventListener('change', (e) => updateScheduleKindUI(e.target.value === 'recurring'));
+    $('#immediateDispatch').addEventListener('change', updateCampaignTimingUI);
+    $('#campaignForm').addEventListener('input', (e) => {
+      if (['messageText', 'linkUrl'].includes(e.target.name)) renderCampaignPreview();
+    });
 
     // Públicos
     $('#newAudienceBtn').addEventListener('click', () => openAudienceModal());
@@ -1642,6 +2078,7 @@
     $('#cancelAudienceBtn').addEventListener('click', closeAudienceModal);
     $('#audienceForm').addEventListener('submit', submitAudience);
     $('#evaluateAudienceBtn').addEventListener('click', evaluateAudienceFromModal);
+    $('#audienceContactSearch').addEventListener('input', renderAudienceContactPicker);
     $('#reloadAnalyticsBtn').addEventListener('click', () => loadPublicos().catch(() => {}));
     $('#productPeriod').addEventListener('change', () => loadProductAnalytics().catch(() => {}));
     $$('.publicos-tab').forEach((tab) => {
@@ -1675,7 +2112,7 @@
       }
       const delBtn = e.target.closest('[data-delete-audience]');
       if (delBtn) {
-        if (!confirm(`Excluir público "${delBtn.dataset.deleteName}"?`)) return;
+        if (!await uiConfirm({ title: 'Excluir público?', message: `“${delBtn.dataset.deleteName}” será removido.`, confirmLabel: 'Excluir', danger: true })) return;
         try {
           await api(`/api/v1/audiences/${encodeURIComponent(delBtn.dataset.deleteAudience)}`, { method: 'DELETE' });
           toast('Público excluído.');
@@ -1687,9 +2124,109 @@
     });
   }
 
+  // ─── Respostas automáticas ───────────────────────────────────────────────
+
+  const RESPONSE_LABELS = {
+    CONFIRMED:        '✅ Pedido Confirmado',
+    IN_PREPARATION:   '👨‍🍳 Em Preparo',
+    READY:            '✅ Pedido Pronto',
+    READY_FOR_PICKUP: '🏪 Pronto para Retirada',
+    OUT_FOR_DELIVERY: '🚚 Saiu para Entrega',
+    COMPLETED:        '😊 Pedido Concluído',
+    CANCELLED:        '❌ Pedido Cancelado',
+  };
+
+  let realtimeTemplatesCache = null;
+
+  async function openRealtimeConfigModal() {
+    const backdrop = $('#realtimeConfigModalBackdrop');
+    const modal = $('#realtimeConfigModal');
+    const list = $('#realtimeTemplatesList');
+    if (!backdrop || !list) return;
+    list.innerHTML = '<p style="color:var(--text-muted)">Carregando…</p>';
+    modal.classList.add('is-active');
+    backdrop.classList.remove('is-hidden');
+    try {
+      const [result, cfgResult] = await Promise.all([
+        api('/api/v1/integrations/whatsapp/responses'),
+        api('/api/v1/integrations/whatsapp/config'),
+      ]);
+      const alertInput = $('#alertNumbersInput');
+      if (alertInput) {
+        const nums = cfgResult.data?.alertNumbers ?? [];
+        alertInput.value = nums.join('\n');
+      }
+      realtimeTemplatesCache = result.data.templates;
+      list.innerHTML = '';
+      for (const [key, label] of Object.entries(RESPONSE_LABELS)) {
+        const tpl = realtimeTemplatesCache[key] ?? { enabled: true, message: '' };
+        const row = document.createElement('div');
+        row.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:10px';
+        row.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <strong style="font-size:14px">${escapeHtml(label)}</strong>
+            <label class="toggle-pill" style="margin:0">
+              <input type="checkbox" data-tpl-key="${escapeHtml(key)}" data-tpl-field="enabled" ${tpl.enabled ? 'checked' : ''} />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <textarea data-tpl-key="${escapeHtml(key)}" data-tpl-field="message" rows="2"
+            style="width:100%;resize:vertical;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)"
+            placeholder="Mensagem enviada ao cliente…">${escapeHtml(tpl.message)}</textarea>
+          <small style="color:var(--text-muted)">Use <code>{ref}</code> para o número do pedido.</small>`;
+        list.appendChild(row);
+      }
+    } catch (err) {
+      list.innerHTML = `<p class="form-error">Erro ao carregar: ${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  function closeRealtimeConfigModal() {
+    $('#realtimeConfigModal')?.classList.remove('is-active');
+    $('#realtimeConfigModalBackdrop')?.classList.add('is-hidden');
+    realtimeTemplatesCache = null;
+  }
+
+  async function saveRealtimeConfig() {
+    const list = $('#realtimeTemplatesList');
+    if (!list) return;
+    const templates = {};
+    for (const key of Object.keys(RESPONSE_LABELS)) {
+      const enabledEl = list.querySelector(`[data-tpl-key="${key}"][data-tpl-field="enabled"]`);
+      const messageEl = list.querySelector(`[data-tpl-key="${key}"][data-tpl-field="message"]`);
+      if (enabledEl && messageEl) {
+        templates[key] = { enabled: enabledEl.checked, message: messageEl.value.trim() };
+      }
+    }
+    const alertInput = $('#alertNumbersInput');
+    const alertNumbers = alertInput
+      ? alertInput.value.split('\n').map((s) => s.trim()).filter(Boolean)
+      : [];
+    const btn = $('#saveRealtimeConfigBtn');
+    setButtonLoading(btn, true, 'Salvando…');
+    try {
+      await Promise.all([
+        api('/api/v1/integrations/whatsapp/responses', { method: 'PUT', body: JSON.stringify({ templates }) }),
+        api('/api/v1/integrations/whatsapp/config', { method: 'PUT', body: JSON.stringify({ alertNumbers }) }),
+      ]);
+      closeRealtimeConfigModal();
+      toast('Mensagens automáticas salvas.');
+    } catch (err) {
+      toast('Erro ao salvar: ' + err.message, 'error');
+    } finally {
+      setButtonLoading(btn, false);
+    }
+  }
+
   async function init() {
+    const host = window.location.host;
+    const sub = $('#apiStateSub');
+    if (sub) sub.textContent = host;
+    const eng = $('#apiEngineUrl');
+    if (eng) eng.textContent = host;
     populateStages();
     bindEvents();
+    setInterval(updateQueueCountdowns, 1000);
     await checkHealth();
     await restoreSession();
   }

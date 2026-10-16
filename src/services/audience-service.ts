@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Database } from '../core/db.js';
 
 export type AudienceRules = {
+  contactIds?: string[];
   stages?: string[];
   origins?: string[];
   tags?: string[];
@@ -128,10 +129,14 @@ export async function evaluateAudience(
 
 export async function queryAudienceContacts(
   db: Database, tenantId: string, rules: AudienceRules,
-): Promise<Array<{ id: string; full_name: string; phone_e164: string | null; stage: string; origin: string }>> {
+): Promise<Array<{ id: string; full_name: string; email: string | null; phone_e164: string | null; stage: string; origin: string }>> {
   const where: string[] = ['c.tenant_id = $1', 'c.do_not_contact = false'];
   const params: unknown[] = [tenantId];
   const p = (val: unknown) => { params.push(val); return `$${params.length}`; };
+
+  if (rules.contactIds?.length) {
+    where.push(`c.id = ANY(${p(rules.contactIds)})`);
+  }
 
   if (rules.stages?.length) {
     where.push(`c.stage = ANY(${p(rules.stages)})`);
@@ -198,8 +203,8 @@ export async function queryAudienceContacts(
     )`);
   }
 
-  const result = await db.query<{ id: string; full_name: string; phone_e164: string | null; stage: string; origin: string }>(
-    `SELECT c.id, c.full_name, c.phone_e164, c.stage, c.origin
+  const result = await db.query<{ id: string; full_name: string; email: string | null; phone_e164: string | null; stage: string; origin: string }>(
+    `SELECT c.id, c.full_name, c.email, c.phone_e164, c.stage, c.origin
      FROM contacts c
      WHERE ${where.join(' AND ')}
      ORDER BY c.full_name

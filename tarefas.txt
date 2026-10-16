@@ -1,0 +1,22 @@
+Whatsapp
+
+1. Validar a integração já existente e fazer o sales engine enxergar a config que já existe; - IMPLEMENTADO NO CÓDIGO / VALIDAÇÃO INTEGRADA E DEPLOY PENDENTES
+2. Ajustar o fomato da conexão existente para tornar a leitura do qr code dentro do sales engine suficiente para criar e configuração a instancia automaticamente, e conectar no fluxo do n8n com uma flag no menu de integrações; - IMPLEMENTADO NO CÓDIGO / VALIDAÇÃO COM EVOLUTION E N8N PENDENTE
+3. Precisamos criar o fluxo de notificações no whatsapp por avanço de pedido no kanban, conforme o adm da loja avança o pedido, o cliente recebe o retorno no whats app sobre andamento do pedido; - IMPLEMENTADO NO CÓDIGO, INCLUSIVE PARA MÚLTIPLOS PEDIDOS / DEPLOY E TESTE REAL PENDENTES
+4. Precisamos criar um fluxo de cancelar notificações e marketing, eventualmente, vou mandar alguma orientação para isso, pode ser um termo específico que vai ativar um nó que informa se o cliente/lead/prospect quer parar de receber mensagens nossas, se sim, revogamos alteração de consentimento no sales engine. Quero que ao escrever o termo, questionemos se ele deseja cancelar marketing apenas, atualização de pedidos por enquanto fica padrão sim sempre; - IMPLEMENTADO PARCIALMENTE NO WORKFLOW / CONFIRMAÇÃO E TESTE REAL PENDENTES
+5. Aproveitando o item 5, podemos criar um termo específico que vai acionar algum nó que chama llm para conversa, assim não gastamos com llm sempre, mas só quando necessário para um atendimento mais personalizado; - PENDENTE
+
+
+Sales Engine
+
+1. Tem muitas referencias a localhost, ambiente teste e etc no html, precisa preparar para produção; - IMPLEMENTADO E VALIDADO LOCALMENTE (TYPECHECK + SUÍTE 103/103) / AGUARDANDO DEPLOY
+2. Em campanhas, opção para arquivar campanhas; - IMPLEMENTADO NO WORKER, SERVIDOR E INTERFACE / TESTE AUTOMATIZADO APROVADO / AGUARDANDO DEPLOY
+3. Opção para excluir campanhas que que ainda não foram enviadas; - IMPLEMENTADO NO WORKER, SERVIDOR E INTERFACE, COM BLOQUEIO QUANDO HÁ HISTÓRICO / TESTE AUTOMATIZADO APROVADO / AGUARDANDO DEPLOY
+4. Em integrações, ele sugere conectar com a loja do localhost 3000, era para conectar com a loja na instancia do Cloudflared; - IMPLEMENTADO E VALIDADO LOCALMENTE: CAMPO AGORA EXIGE URL PÚBLICA / AGUARDANDO DEPLOY
+5. Sales Engine também aparece como localhost:4010, precisa aparecer só online, já que é no próprio Sales Engine que estamos logado para ver essa info; - IMPLEMENTADO E VALIDADO LOCALMENTE COM URL PÚBLICA/ORIGEM DA REQUISIÇÃO / AGUARDANDO DEPLOY
+6. Congelar os tamanhos de cards e posições, independente de quantidade de textos, afim de manterem alinhamento; - IMPLEMENTADO LOCALMENTE PARA CARDS DE MÉTRICAS, PRODUTOS, INTEGRAÇÕES E ANALYTICS / VALIDAÇÃO VISUAL E DEPLOY PENDENTES
+7. Consentimento por padrão deve ser autorizado para tudo, depois mudamos, inclusive, preciso de uma função para alterar consentimento em lote, para os já cadastrados, coloque como true; - IMPLEMENTADO LOCALMENTE: NOVOS CONTATOS AUTORIZAM MARKETING E PEDIDOS; BOTÃO "AUTORIZAR PENDENTES" REGULARIZA A BASE SEM SOBRESCREVER REVOGAÇÕES, BLOQUEADOS OU ARQUIVADOS / SUÍTE 104/104 APROVADA / AGUARDANDO DEPLOY E EXECUÇÃO DO LOTE
+
+
+
+**Importante que o sales engine funciona em conexão com o Food App, código fonte no E: e no git samjoe

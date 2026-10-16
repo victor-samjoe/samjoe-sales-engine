@@ -2,6 +2,7 @@
 import type { Database } from '../core/db.js';
 import { normalizeBrazilianPhone } from '../domain/phone.js';
 import { recordConsents } from './consent-service.js';
+import { sendOrderAlertToOwners, sendOrderStatusWhatsApp } from './wa-notify.js';
 
 export type SamJoeFoodCustomer = {
   external_id: string;
@@ -23,6 +24,8 @@ export type SamJoeFoodOrder = {
   total_cents: number;
   cost_cents?: number;
   ref?: string;
+  fulfillment?: string;
+  delivery_address?: string;
   items?: SamJoeFoodOrderItem[];
 };
 
@@ -30,10 +33,11 @@ export type SamJoeFoodEventPayload = {
   event_id: string;
   event_type:
     | 'customer.created' | 'customer.updated' | 'order.created'
-    | 'order.paid' | 'order.cancelled' | 'order.refunded';
+    | 'order.paid' | 'order.cancelled' | 'order.refunded'
+    | 'order.status_changed';
   occurred_at: string;
   customer: SamJoeFoodCustomer;
-  order?: SamJoeFoodOrder;
+  order?: SamJoeFoodOrder & { from_status?: string; to_status?: string };
 };
 
 type IntegrationRow = {
@@ -144,6 +148,80 @@ async function ensureExternalLink(db: Database, tenantId: string, contactId: str
   }
 }
 
+async function resolveNotificationPhone(
+  db: Database,
+  tenantId: string,
+  contactId: string | null,
+  eventPhone?: string,
+): Promise<string | null> {
+  if (eventPhone?.trim()) return eventPhone;
+  if (!contactId) return null;
+  const result = await db.query<{ phone_e164: string | null }>(
+    `SELECT phone_e164 FROM contacts WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+    [contactId, tenantId],
+  );
+  return result.rows[0]?.phone_e164 ?? null;
+}
+
+async function setOpenOrderContext(
+  db: Database,
+  tenantId: string,
+  contactId: string | null,
+  externalOrderId: string,
+  orderRef: string,
+  status: string,
+) {
+  if (!contactId) return;
+  await db.query(
+    `INSERT INTO se_contact_open_orders
+       (tenant_id, contact_id, external_order_id, order_ref, status)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (tenant_id, external_order_id) DO UPDATE
+       SET contact_id = EXCLUDED.contact_id,
+           order_ref = EXCLUDED.order_ref,
+           status = EXCLUDED.status,
+           status_updated_at = now()`,
+    [tenantId, contactId, externalOrderId, orderRef, status],
+  );
+  await db.query(
+    `UPDATE contacts
+        SET open_order_ref = $1, open_order_status = $2, updated_at = now()
+      WHERE id = $3 AND tenant_id = $4`,
+    [orderRef, status, contactId, tenantId],
+  );
+}
+
+async function clearOpenOrderContext(
+  db: Database,
+  tenantId: string,
+  contactId: string | null,
+  externalOrderId: string,
+  orderRef: string,
+) {
+  if (!contactId) return;
+  await db.query(
+    `DELETE FROM se_contact_open_orders
+      WHERE tenant_id = $1 AND contact_id = $2
+        AND (external_order_id = $3 OR order_ref = $4)`,
+    [tenantId, contactId, externalOrderId, orderRef],
+  );
+  const latest = await db.query<{ order_ref: string; status: string }>(
+    `SELECT order_ref, status
+       FROM se_contact_open_orders
+      WHERE tenant_id = $1 AND contact_id = $2
+      ORDER BY status_updated_at DESC, order_ref
+      LIMIT 1`,
+    [tenantId, contactId],
+  );
+  const remaining = latest.rows[0];
+  await db.query(
+    `UPDATE contacts
+        SET open_order_ref = $1, open_order_status = $2, updated_at = now()
+      WHERE id = $3 AND tenant_id = $4`,
+    [remaining?.order_ref ?? null, remaining?.status ?? null, contactId, tenantId],
+  );
+}
+
 async function createContactFromSamJoeFood(db: Database, tenantId: string, customer: SamJoeFoodCustomer) {
   let phone: string | null = null;
   try { if (customer.phone) phone = normalizeBrazilianPhone(customer.phone); } catch { /* ignore */ }
@@ -180,23 +258,27 @@ async function findLastTouchCampaign(
   return null;
 }
 
-export async function processSamJoeFoodEvent(db: Database, tenantId: string, event: SamJoeFoodEventPayload) {
+export async function processSamJoeFoodEvent(db: Database, tenantId: string, event: SamJoeFoodEventPayload, envEvolutionUrl?: string, envApiKey?: string) {
   const { event_type, event_id, occurred_at, customer, order } = event;
 
-  const { contactId, ambiguous } = await resolveContact(db, tenantId, customer);
+  const resolvedContact = await resolveContact(db, tenantId, customer);
+  let contactId = resolvedContact.contactId;
+  const { ambiguous } = resolvedContact;
   if (ambiguous) return { kind: 'ambiguous' as const, event_type };
 
   if (event_type === 'customer.created') {
     let id = contactId;
+    let createdNew = false;
     if (!id) {
       const created = await createContactFromSamJoeFood(db, tenantId, customer);
       id = created?.id ?? null;
+      createdNew = Boolean(id);
     }
     if (id) {
       await ensureExternalLink(db, tenantId, id, customer.external_id);
-      // Implicitly grant order_updates consent — the customer placed an order on the app.
+      // New contacts follow the CRM default; existing contacts only gain order updates.
       await recordConsents(db, tenantId, id, null, {
-        channel: 'samjoe_food', purposes: ['order_updates'], action: 'granted',
+        channel: createdNew ? 'whatsapp' : 'samjoe_food', purposes: createdNew ? ['marketing', 'order_updates'] : ['order_updates'], action: 'granted',
         source: 'samjoe_food_signup', policyVersion: '1.0', occurredAt: occurred_at,
       });
     }
@@ -211,8 +293,30 @@ export async function processSamJoeFoodEvent(db: Database, tenantId: string, eve
   }
 
   if (event_type === 'order.created') {
+    if (!contactId && (customer.phone || customer.email)) {
+      const created = await createContactFromSamJoeFood(db, tenantId, customer);
+      contactId = created?.id ?? null;
+      if (contactId) {
+        await ensureExternalLink(db, tenantId, contactId, customer.external_id);
+        await recordConsents(db, tenantId, contactId, null, {
+          channel: 'whatsapp', purposes: ['marketing', 'order_updates'], action: 'granted',
+          source: 'samjoe_food_order', policyVersion: '1.0', occurredAt: occurred_at,
+        });
+      }
+    }
+    const orderRef = order?.ref ?? order?.external_id;
+    let notification = undefined;
+    if (order && orderRef) {
+      await setOpenOrderContext(db, tenantId, contactId, order.external_id, orderRef, 'ORDER_RECEIVED');
+    }
+    if (order && customer.phone && orderRef) {
+      notification = await sendOrderStatusWhatsApp(db, tenantId, orderRef, 'ORDER_RECEIVED', customer.phone, envEvolutionUrl, envApiKey);
+    }
+    if (order && orderRef) {
+      await sendOrderAlertToOwners(db, tenantId, orderRef, customer.name, order.total_cents, order.fulfillment, order.items, order.delivery_address, envEvolutionUrl, envApiKey).catch(() => {});
+    }
     await touchIntegration(db, tenantId, occurred_at);
-    return { kind: 'ok' as const, event_type, contact_id: contactId };
+    return { kind: 'ok' as const, event_type, contact_id: contactId, notification };
   }
 
   if (event_type === 'order.paid' && order) {
@@ -252,11 +356,26 @@ export async function processSamJoeFoodEvent(db: Database, tenantId: string, eve
       for (const item of order.items) {
         let productId: string | null = null;
         if (item.external_product_id) {
-          const pMatch = await db.query<{ id: string }>(
-            `SELECT id FROM se_products WHERE tenant_id = $1 AND sku = $2 LIMIT 1`,
-            [tenantId, item.external_product_id],
+          // Upsert product so the catalog mirrors the Food store automatically
+          const upsert = await db.query<{ id: string }>(
+            `INSERT INTO se_products
+               (id, tenant_id, sku, name, category, current_price_cents)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (tenant_id, sku) DO UPDATE
+               SET name                = EXCLUDED.name,
+                   category            = COALESCE(NULLIF(EXCLUDED.category,''), se_products.category),
+                   current_price_cents = EXCLUDED.current_price_cents,
+                   updated_at          = now()
+             RETURNING id`,
+            [
+              randomUUID(), tenantId,
+              item.external_product_id,
+              item.name ?? item.external_product_id,
+              item.category ?? 'Sem categoria',
+              item.unit_price_cents ?? 0,
+            ],
           );
-          productId = pMatch.rows[0]?.id ?? null;
+          productId = upsert.rows[0]?.id ?? null;
         }
         await db.query(
           `INSERT INTO se_order_items
@@ -277,9 +396,38 @@ export async function processSamJoeFoodEvent(db: Database, tenantId: string, eve
          WHERE id = $2 AND tenant_id = $3 AND (last_purchase_at IS NULL OR last_purchase_at < $1)`,
         [occurred_at, contactId, tenantId],
       );
+      await setOpenOrderContext(db, tenantId, contactId, order.external_id, order.ref ?? order.external_id, 'CONFIRMED');
+    }
+    let notification = undefined;
+    const notificationPhone = await resolveNotificationPhone(db, tenantId, contactId, customer.phone);
+    if (notificationPhone) {
+      const orderRef = order.ref ?? order.external_id;
+      notification = await sendOrderStatusWhatsApp(
+        db, tenantId, orderRef, 'CONFIRMED', notificationPhone, envEvolutionUrl, envApiKey,
+      );
     }
     await touchIntegration(db, tenantId, occurred_at);
-    return { kind: 'ok' as const, event_type, contact_id: contactId, campaign_id: campaignId };
+    return { kind: 'ok' as const, event_type, contact_id: contactId, campaign_id: campaignId, notification };
+  }
+
+  if (event_type === 'order.status_changed' && order) {
+    const toStatus = (order.to_status ?? '').trim().toUpperCase();
+    const phone = await resolveNotificationPhone(db, tenantId, contactId, customer.phone);
+    const orderRef = order.ref ?? order.external_id;
+    const closedStatuses = ['COMPLETED', 'CANCELLED', 'REFUNDED'];
+    if (contactId) {
+      if (closedStatuses.includes(toStatus.toUpperCase())) {
+        await clearOpenOrderContext(db, tenantId, contactId, order.external_id, orderRef);
+      } else if (toStatus) {
+        await setOpenOrderContext(db, tenantId, contactId, order.external_id, orderRef, toStatus.toUpperCase());
+      }
+    }
+    let notification = undefined;
+    if (phone && toStatus) {
+      notification = await sendOrderStatusWhatsApp(db, tenantId, orderRef, toStatus, phone, envEvolutionUrl, envApiKey);
+    }
+    await touchIntegration(db, tenantId, occurred_at);
+    return { kind: 'ok' as const, event_type, notification };
   }
 
   if ((event_type === 'order.cancelled' || event_type === 'order.refunded') && order) {
@@ -290,6 +438,7 @@ export async function processSamJoeFoodEvent(db: Database, tenantId: string, eve
         WHERE tenant_id = $2 AND source = 'samjoe_food' AND external_order_id = $3 AND status = 'paid'`,
       [newStatus, tenantId, order.external_id],
     );
+    await clearOpenOrderContext(db, tenantId, contactId, order.external_id, order.ref ?? order.external_id);
     await touchIntegration(db, tenantId, occurred_at);
     return { kind: 'ok' as const, event_type };
   }

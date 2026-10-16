@@ -2,8 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { Database } from '../core/db.js';
 import { writeAudit } from '../core/audit.js';
-import { CONTACT_STAGES, createContact, listContacts, type ContactInput } from '../services/contact-service.js';
-import { recordConsents, type ConsentInput } from '../services/consent-service.js';
+import {
+  CONTACT_STAGES, archiveContact, createContact, createContactsBulk, deleteContact,
+  listContacts, updateContact, type ContactInput, type ContactUpdateInput,
+} from '../services/contact-service.js';
+import { grantMissingDefaultConsents, recordConsents, type ConsentInput } from '../services/consent-service.js';
 
 const ContactBody = Type.Object({
   fullName: Type.String({ minLength: 2, maxLength: 180 }),
@@ -41,7 +44,7 @@ export async function contactRoutes(app: FastifyInstance, db: Database) {
     onRequest: [app.authenticate],
     schema: { body: ContactBody },
   }, async (request, reply) => {
-    const contact = await createContact(db, request.user.tenantId, request.body);
+    const contact = await createContact(db, request.user.tenantId, request.body, request.user.sub);
     await writeAudit(db, {
       tenantId: request.user.tenantId,
       actorUserId: request.user.sub,
@@ -50,6 +53,60 @@ export async function contactRoutes(app: FastifyInstance, db: Database) {
       action: 'contact.created',
     });
     return reply.code(201).send(contact);
+  });
+
+  app.post<{ Body: { contacts: ContactInput[] } }>('/api/v1/contacts/bulk', {
+    onRequest: [app.authenticate],
+  }, async (request, reply) => {
+    if (request.user.role === 'viewer') return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } });
+    if (!Array.isArray(request.body?.contacts) || request.body.contacts.length < 1 || request.body.contacts.length > 500) {
+      return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Envie de 1 a 500 contatos' } });
+    }
+    return reply.code(201).send({ data: await createContactsBulk(db, request.user.tenantId, request.body.contacts, request.user.sub) });
+  });
+
+  app.post('/api/v1/contacts/consents/bulk-defaults', {
+    onRequest: [app.authenticate],
+  }, async (request, reply) => {
+    if (!['owner', 'manager'].includes(request.user.role)) {
+      return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Apenas owner ou manager podem alterar consentimentos em lote' } });
+    }
+    const result = await grantMissingDefaultConsents(db, request.user.tenantId, request.user.sub);
+    await writeAudit(db, {
+      tenantId: request.user.tenantId,
+      actorUserId: request.user.sub,
+      entityType: 'consent_event',
+      action: 'consent.bulk_defaults_granted',
+      metadata: result,
+    });
+    return { data: result };
+  });
+
+  app.patch<{ Params: { id: string }; Body: ContactUpdateInput }>('/api/v1/contacts/:id', {
+    onRequest: [app.authenticate],
+  }, async (request, reply) => {
+    if (request.user.role === 'viewer') return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } });
+    const updated = await updateContact(db, request.user.tenantId, request.params.id, request.body);
+    if (!updated) return reply.code(404).send({ error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado' } });
+    return updated;
+  });
+
+  app.post<{ Params: { id: string } }>('/api/v1/contacts/:id/archive', {
+    onRequest: [app.authenticate],
+  }, async (request, reply) => {
+    if (request.user.role === 'viewer') return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } });
+    const archived = await archiveContact(db, request.user.tenantId, request.params.id);
+    if (!archived) return reply.code(404).send({ error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado' } });
+    return archived;
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/v1/contacts/:id', {
+    onRequest: [app.authenticate],
+  }, async (request, reply) => {
+    if (!['owner', 'manager'].includes(request.user.role)) return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Apenas owner ou manager podem excluir contatos' } });
+    const deleted = await deleteContact(db, request.user.tenantId, request.params.id);
+    if (!deleted) return reply.code(404).send({ error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado' } });
+    return reply.code(204).send();
   });
 
   app.post<{ Params: { id: string }; Body: ConsentInput }>('/api/v1/contacts/:id/consents', {

@@ -63,7 +63,7 @@ async function insertContact(db: Database, tenantId: string, opts: ContactOpts =
 
 async function grantConsent(db: Database, tenantId: string, contactId: string, action: 'granted' | 'revoked' = 'granted') {
   await db.query(
-    `INSERT INTO consent_events
+    `INSERT INTO se_consent_events
       (id, tenant_id, contact_id, channel, purpose, action, source, policy_version, occurred_at)
      VALUES ($1, $2, $3, 'whatsapp', 'marketing', $4, 'manual_crm', '1.0', $5)`,
     [randomUUID(), tenantId, contactId, action, new Date().toISOString()],
@@ -467,7 +467,6 @@ describe('Campaign state machine', () => {
     await grantConsent(db, tenantId, cid);
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
-
     const result = await cancelCampaign(db, tenantId, camp.id);
     expect(result.kind).toBe('ok');
     if (result.kind !== 'ok') return;
@@ -506,6 +505,22 @@ describe('Campaign state machine', () => {
     expect(result).toHaveProperty('campaign');
   });
 
+  it('updateCampaign substitui e remove assets da campanha', async () => {
+    const camp = await fullCampaignSetup(db, tenantId, userId);
+    const imageUrl = 'https://example.test/campaign-image.webp';
+
+    const withAsset = await updateCampaign(db, tenantId, camp.id, {
+      assets: [{ type: 'image', url: imageUrl, mimeType: 'image/webp', fileName: 'campaign-image.webp' }],
+    });
+    expect(withAsset).toMatchObject({
+      locked: false,
+      campaign: { assets: [{ asset_type: 'image', url: imageUrl, mime_type: 'image/webp' }] },
+    });
+
+    const withoutAsset = await updateCampaign(db, tenantId, camp.id, { assets: [] });
+    expect(withoutAsset).toMatchObject({ locked: false, campaign: { assets: [] } });
+  });
+
   it('getCampaignPreflight retorna { ready: false } quando snapshot ainda nÃ£o existe', async () => {
     const camp = await fullCampaignSetup(db, tenantId, userId);
     const result = await getCampaignPreflight(db, tenantId, camp.id);
@@ -533,17 +548,17 @@ describe('Dispatch service â€” status machine', () => {
     await grantConsent(db, tenantId, cid);
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
-    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id });
-    return { campaignId: camp.id, contactId: cid, recipientId: jobs[0]!.recipient_id };
+    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id, force: true });
+    const job = jobs[0];
+    if (!job) throw new Error('Expected an approved campaign dispatch job');
+    return { campaignId: camp.id, contactId: cid, recipientId: job.recipient_id, job };
   }
 
   it('getDispatchJobs retorna job com campos esperados', async () => {
-    const { campaignId, recipientId, contactId } = await setupApprovedCampaign();
-    const jobs = await getDispatchJobs(db, tenantId, { campaignId });
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.recipient_id).toBe(recipientId);
-    expect(jobs[0]!.contact_id).toBe(contactId);
-    expect(jobs[0]!.phone_e164).toBe('+5511999990001');
+    const { job, contactId } = await setupApprovedCampaign();
+    expect(job.recipient_id).toBeTruthy();
+    expect(job.contact_id).toBe(contactId);
+    expect(job.phone_e164).toBe('+5511999990001');
   });
 
   it('getDispatchJobs respeita limit', async () => {
@@ -555,7 +570,7 @@ describe('Dispatch service â€” status machine', () => {
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
 
-    const jobs = await getDispatchJobs(db, tenantId, { limit: 2 });
+    const jobs = await getDispatchJobs(db, tenantId, { limit: 2, force: true });
     expect(jobs.length).toBeLessThanOrEqual(2);
   });
 
@@ -821,7 +836,7 @@ describe('SamJoE Food service â€” todos os tipos de evento', () => {
     const camp = await fullCampaignSetup(db, tenantId, userId, { conversionWindowDays: 7 });
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
-    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id });
+    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id, force: true });
     await processDispatchEvent(db, tenantId, {
       recipientId: jobs[0]!.recipient_id, eventType: 'delivered', provider: 'ev',
       externalEventId: 'del-attr-01', occurredAt: new Date(Date.now() - 3600000).toISOString(),
@@ -870,7 +885,7 @@ describe('SamJoE Food service â€” todos os tipos de evento', () => {
     const camp = await fullCampaignSetup(db, tenantId, userId, { conversionWindowDays: 1 }); // janela de 1 dia
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
-    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id });
+    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id, force: true });
     // Entrega hÃ¡ 2 dias â€” fora da janela de 1 dia
     const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString();
     await processDispatchEvent(db, tenantId, {
@@ -1013,7 +1028,7 @@ describe('Analytics service â€” agregaÃ§Ã£o', () => {
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
 
-    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id });
+    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id, force: true });
     await processDispatchEvent(db, tenantId, {
       recipientId: jobs[0]!.recipient_id, eventType: 'delivered',
       provider: 'ev', externalEventId: 'an-del-01', occurredAt: new Date().toISOString(),
@@ -1037,7 +1052,7 @@ describe('Analytics service â€” agregaÃ§Ã£o', () => {
     await grantConsent(db, tenantId, cid);
     await generateCampaignPreflight(db, tenantId, camp.id);
     await approveCampaign(db, tenantId, camp.id, userId);
-    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id });
+    const jobs = await getDispatchJobs(db, tenantId, { campaignId: camp.id, force: true });
     await processDispatchEvent(db, tenantId, {
       recipientId: jobs[0]!.recipient_id, eventType: 'read',
       provider: 'ev', externalEventId: 'an-read-01', occurredAt: new Date(Date.now() - 3600000).toISOString(),

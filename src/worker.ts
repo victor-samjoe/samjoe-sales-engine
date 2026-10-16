@@ -8,15 +8,18 @@ import bcrypt from 'bcryptjs';
 
 import { authenticateUser } from './services/auth-service.js';
 import { writeAudit } from './core/audit.js';
-import { createContact, listContacts } from './services/contact-service.js';
-import { recordConsents } from './services/consent-service.js';
-import { createProduct, listProducts } from './services/product-service.js';
+import {
+  archiveContact, createContact, createContactsBulk, deleteContact,
+  listContacts, updateContact, type ContactInput,
+} from './services/contact-service.js';
+import { grantMissingDefaultConsents, recordConsents } from './services/consent-service.js';
+import { createProduct, deleteProduct, listCategories, listProducts, updateProduct } from './services/product-service.js';
 import {
   approveCampaign, cancelCampaign, createCampaign,
   generateCampaignPreflight, getCampaign, getCampaignPreflight,
   listCampaigns, updateCampaign,
 } from './services/campaign-service.js';
-import { getDispatchJobs, processDispatchEvent } from './services/dispatch-service.js';
+import { dispatchCampaignNow, getDispatchJobs, processDispatchEvent } from './services/dispatch-service.js';
 import {
   getSamJoeFoodConfig, getSamJoeFoodSecret,
   upsertSamJoeFoodConfig, processSamJoeFoodEvent,
@@ -30,6 +33,8 @@ import {
   updateAudience, deleteAudience, evaluateAudience,
   type AudienceInput, type AudienceRules,
 } from './services/audience-service.js';
+import { configureEvolutionWebhook } from './services/wa-webhook-config.js';
+import { WA_DEFAULT_TEMPLATES, type WaResponseTemplates } from './services/wa-notify.js';
 import type { Database } from './core/db.js';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +50,9 @@ interface Env {
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
   ASSETS: { fetch(req: Request): Promise<Response> };
+  EVOLUTION_API_URL?: string;
+  EVOLUTION_API_KEY?: string;
+  N8N_AUTOMATION_WEBHOOK_URL?: string;
 }
 
 type JwtUser = {
@@ -394,9 +402,63 @@ app.post('/api/v1/contacts', requireAuth, async (c) => {
   const db = c.get('db');
   const u = c.get('user');
   const body = await c.req.json();
-  const contact = await createContact(db, u.tenantId, body);
+  const contact = await createContact(db, u.tenantId, body, u.sub);
   await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'contact', entityId: String((contact as { id: string }).id), action: 'contact.created' });
   return c.json(contact, 201);
+});
+
+app.post('/api/v1/contacts/bulk', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (u.role === 'viewer') return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const body = await c.req.json().catch(() => null) as { contacts?: ContactInput[] } | null;
+  if (!Array.isArray(body?.contacts) || body.contacts.length < 1 || body.contacts.length > 500) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Envie de 1 a 500 contatos' } }, 400);
+  }
+  const contacts = body.contacts.filter((item) => item && typeof item.fullName === 'string' && item.fullName.trim().length >= 2);
+  if (!contacts.length) return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Nenhuma linha válida' } }, 400);
+  const result = await createContactsBulk(db, u.tenantId, contacts, u.sub);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'contact', action: 'contact.bulk_created', metadata: { requested: body.contacts.length, created: result.created.length, errors: result.errors.length } });
+  return c.json({ data: result }, 201);
+});
+
+app.post('/api/v1/contacts/consents/bulk-defaults', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (!['owner', 'manager'].includes(u.role)) return c.json({ error: { code: 'FORBIDDEN', message: 'Apenas owner ou manager podem alterar consentimentos em lote' } }, 403);
+  const result = await grantMissingDefaultConsents(db, u.tenantId, u.sub);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'consent_event', action: 'consent.bulk_defaults_granted', metadata: result });
+  return c.json({ data: result });
+});
+
+app.patch('/api/v1/contacts/:id', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (u.role === 'viewer') return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const updated = await updateContact(db, u.tenantId, c.req.param('id'), await c.req.json());
+  if (!updated) return c.json({ error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado' } }, 404);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'contact', entityId: c.req.param('id'), action: 'contact.updated' });
+  return c.json(updated);
+});
+
+app.post('/api/v1/contacts/:id/archive', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (u.role === 'viewer') return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const archived = await archiveContact(db, u.tenantId, c.req.param('id'));
+  if (!archived) return c.json({ error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado' } }, 404);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'contact', entityId: c.req.param('id'), action: 'contact.archived' });
+  return c.json(archived);
+});
+
+app.delete('/api/v1/contacts/:id', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (!['owner', 'manager'].includes(u.role)) return c.json({ error: { code: 'FORBIDDEN', message: 'Apenas owner ou manager podem excluir contatos' } }, 403);
+  const deleted = await deleteContact(db, u.tenantId, c.req.param('id'));
+  if (!deleted) return c.json({ error: { code: 'CONTACT_NOT_FOUND', message: 'Contato não encontrado' } }, 404);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'contact', entityId: c.req.param('id'), action: 'contact.deleted' });
+  return c.body(null, 204);
 });
 
 app.post('/api/v1/contacts/:id/consents', requireAuth, async (c) => {
@@ -411,12 +473,95 @@ app.post('/api/v1/contacts/:id/consents', requireAuth, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// WhatsApp Context (used by n8n to route messages)
+// ---------------------------------------------------------------------------
+
+app.get('/api/v1/contacts/wa-context', requireServiceKey, async (c) => {
+  const db = c.get('db');
+  const phone = c.req.query('phone');
+  if (!phone) return c.json({ error: { code: 'MISSING_PHONE', message: 'phone param required' } }, 400);
+
+  // Tenant identified via x-tenant-id header; falls back to first tenant (single-tenant setup)
+  const tenantIdHeader = c.req.header('x-tenant-id');
+  let tenantId: string | null = tenantIdHeader ?? null;
+  if (!tenantId) {
+    const row = await db.query<{ id: string }>(`SELECT id FROM tenants ORDER BY created_at LIMIT 1`);
+    tenantId = row.rows[0]?.id ?? null;
+  }
+  if (!tenantId) return c.json({ error: { code: 'TENANT_NOT_FOUND' } }, 404);
+
+  const contactRow = await db.query<{
+    id: string; stage: string; last_purchase_at: string | null;
+    open_order_ref: string | null; open_order_status: string | null;
+  }>(
+    `SELECT id, stage, last_purchase_at, open_order_ref, open_order_status
+       FROM contacts WHERE tenant_id = $1 AND phone_e164 = $2 LIMIT 1`,
+    [tenantId, phone],
+  );
+  const contact = contactRow.rows[0] ?? null;
+
+  let openOrders: Array<{ externalOrderId: string; ref: string; status: string }> = [];
+  if (contact) {
+    const openOrderRows = await db.query<{
+      external_order_id: string; order_ref: string; status: string;
+    }>(
+      `SELECT external_order_id, order_ref, status
+         FROM se_contact_open_orders
+        WHERE tenant_id = $1 AND contact_id = $2
+        ORDER BY status_updated_at DESC, order_ref`,
+      [tenantId, contact.id],
+    );
+    openOrders = openOrderRows.rows.map((row) => ({
+      externalOrderId: row.external_order_id,
+      ref: row.order_ref,
+      status: row.status,
+    }));
+  }
+
+  let consentMarketing = false;
+  let consentOrderUpdates = false;
+  if (contact) {
+    const consentRow = await db.query<{ purpose: string; action: string }>(
+      `SELECT DISTINCT ON (purpose) purpose, action
+         FROM se_consent_events
+        WHERE tenant_id = $1 AND contact_id = $2
+        ORDER BY purpose, occurred_at DESC`,
+      [tenantId, contact.id],
+    );
+    for (const r of consentRow.rows) {
+      if (r.purpose === 'marketing') consentMarketing = r.action === 'granted';
+      if (r.purpose === 'order_updates') consentOrderUpdates = r.action === 'granted';
+    }
+  }
+
+  return c.json({
+    data: {
+      exists: !!contact,
+      contactId: contact?.id ?? null,
+      stage: contact?.stage ?? null,
+      hasOpenOrder: openOrders.length > 0,
+      openOrders,
+      openOrderRef: openOrders[0]?.ref ?? contact?.open_order_ref ?? null,
+      openOrderStatus: openOrders[0]?.status ?? contact?.open_order_status ?? null,
+      consentMarketing,
+      consentOrderUpdates,
+      lastOrderAt: contact?.last_purchase_at ?? null,
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Products
 // ---------------------------------------------------------------------------
 
 app.get('/api/v1/products', requireAuth, async (c) => {
   const result = await listProducts(c.get('db'), c.get('user').tenantId);
   return c.json({ data: result.rows });
+});
+
+app.get('/api/v1/products/categories', requireAuth, async (c) => {
+  const result = await listCategories(c.get('db'), c.get('user').tenantId);
+  return c.json({ data: result.rows.map((r: { category: string }) => r.category) });
 });
 
 app.post('/api/v1/products', requireAuth, async (c) => {
@@ -427,6 +572,35 @@ app.post('/api/v1/products', requireAuth, async (c) => {
   const product = await createProduct(db, u.tenantId, body);
   await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'product', entityId: String((product as { id: string }).id), action: 'product.created' });
   return c.json(product, 201);
+});
+
+app.put('/api/v1/products/:id', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (u.role === 'viewer') return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const body = await c.req.json();
+  try {
+    const { product, hasSales } = await updateProduct(db, u.tenantId, c.req.param('id'), body);
+    await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'product', entityId: c.req.param('id'), action: 'product.updated', metadata: { hasSales } });
+    return c.json({ data: product });
+  } catch (err: unknown) {
+    const e = err as { statusCode?: number; message: string };
+    return c.json({ error: { code: 'UPDATE_ERROR', message: e.message } }, (e.statusCode ?? 400) as 400 | 404 | 409);
+  }
+});
+
+app.delete('/api/v1/products/:id', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  if (u.role === 'viewer') return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  try {
+    const result = await deleteProduct(db, u.tenantId, c.req.param('id'));
+    await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'product', entityId: c.req.param('id'), action: result.deleted ? 'product.deleted' : 'product.deactivated' });
+    return c.json({ data: result });
+  } catch (err: unknown) {
+    const e = err as { statusCode?: number; message: string };
+    return c.json({ error: { code: 'DELETE_ERROR', message: e.message } }, (e.statusCode ?? 400) as 400 | 404);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -444,6 +618,27 @@ app.get('/api/v1/campaigns/:id', requireAuth, async (c) => {
   const campaign = await getCampaign(db, u.tenantId, c.req.param('id'));
   if (!campaign) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
   return c.json(campaign);
+});
+
+app.get('/api/v1/campaigns/:id/recipients', requireAuth, async (c) => {
+  const db = c.get('db'); const u = c.get('user');
+  const search = (c.req.query('search') ?? '').trim();
+  const params: unknown[] = [c.req.param('id'), u.tenantId];
+  let searchSql = '';
+  if (search) {
+    const index = params.push(`%${search}%`);
+    searchSql = ` AND (ct.full_name ILIKE $${index} OR COALESCE(ct.email,'') ILIKE $${index} OR COALESCE(ct.phone_e164,'') ILIKE $${index})`;
+  }
+  const result = await db.query(
+    `SELECT r.id AS recipient_id, ct.id AS contact_id, ct.full_name, ct.email, ct.phone_e164,
+            r.eligible, r.delivery_status, r.queued_at, r.sent_at, r.delivered_at, r.read_at, r.failed_at
+       FROM campaign_recipients r
+       JOIN contacts ct ON ct.id = r.contact_id AND ct.tenant_id = r.tenant_id
+      WHERE r.campaign_id = $1 AND r.tenant_id = $2${searchSql}
+      ORDER BY ct.full_name LIMIT 1000`,
+    params,
+  );
+  return c.json({ data: result.rows, total: result.rows.length });
 });
 
 app.post('/api/v1/campaigns', requireAuth, async (c) => {
@@ -505,8 +700,46 @@ app.post('/api/v1/campaigns/:id/cancel', requireAuth, async (c) => {
   const result = await cancelCampaign(db, u.tenantId, c.req.param('id'));
   if (result.kind === 'not_found') return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
   if (result.kind === 'invalid_status') return c.json({ error: { code: 'CAMPAIGN_LOCKED', message: `Campanha já está ${result.status}` } }, 409);
+  if (result.kind === 'already_dispatched') return c.json({ error: { code: 'CAMPAIGN_ALREADY_DISPATCHED', message: 'Somente campanhas ainda não disparadas podem ser canceladas' } }, 409);
   await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'campaign', entityId: c.req.param('id'), action: 'campaign.cancelled', metadata: { cancelled_recipients: result.cancelled } });
   return c.json({ cancelled: result.cancelled });
+});
+
+app.post('/api/v1/campaigns/:id/pause', requireAuth, async (c) => {
+  const db = c.get('db'); const u = c.get('user');
+  if (!['owner', 'manager'].includes(u.role)) return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const result = await db.query(`UPDATE campaigns SET paused_at = now(), updated_at = now() WHERE id = $1 AND tenant_id = $2 AND archived_at IS NULL RETURNING id`, [c.req.param('id'), u.tenantId]);
+  if (!result.rowCount) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'campaign', entityId: c.req.param('id'), action: 'campaign.paused' });
+  return c.json({ data: { paused: true } });
+});
+
+app.post('/api/v1/campaigns/:id/resume', requireAuth, async (c) => {
+  const db = c.get('db'); const u = c.get('user');
+  if (!['owner', 'manager'].includes(u.role)) return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const result = await db.query(`UPDATE campaigns SET paused_at = NULL, updated_at = now() WHERE id = $1 AND tenant_id = $2 AND archived_at IS NULL RETURNING id`, [c.req.param('id'), u.tenantId]);
+  if (!result.rowCount) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'campaign', entityId: c.req.param('id'), action: 'campaign.resumed' });
+  return c.json({ data: { paused: false } });
+});
+
+app.post('/api/v1/campaigns/:id/archive', requireAuth, async (c) => {
+  const db = c.get('db'); const u = c.get('user');
+  if (u.role === 'viewer') return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  const result = await db.query(`UPDATE campaigns SET archived_at = now(), paused_at = now(), updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING id`, [c.req.param('id'), u.tenantId]);
+  if (!result.rowCount) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
+  await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'campaign', entityId: c.req.param('id'), action: 'campaign.archived' });
+  return c.json({ data: { archived: true } });
+});
+
+app.delete('/api/v1/campaigns/:id', requireAuth, async (c) => {
+  const db = c.get('db'); const u = c.get('user');
+  if (u.role !== 'owner') return c.json({ error: { code: 'FORBIDDEN', message: 'Apenas owner pode excluir campanhas' } }, 403);
+  const sent = await db.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM campaign_recipients WHERE campaign_id = $1 AND tenant_id = $2 AND delivery_status IN ('dispatching','sent','delivered','read')`, [c.req.param('id'), u.tenantId]);
+  if (Number(sent.rows[0]?.count ?? 0) > 0) return c.json({ error: { code: 'CAMPAIGN_HAS_HISTORY', message: 'Campanhas já disparadas devem ser arquivadas para preservar o histórico' } }, 409);
+  const result = await db.query(`DELETE FROM campaigns WHERE id = $1 AND tenant_id = $2 RETURNING id`, [c.req.param('id'), u.tenantId]);
+  if (!result.rowCount) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
+  return c.body(null, 204);
 });
 
 app.post('/api/v1/campaigns/:id/clone', requireAuth, async (c) => {
@@ -518,9 +751,11 @@ app.post('/api/v1/campaigns/:id/clone', requireAuth, async (c) => {
     name: string; objective: string | null; message_text: string; link_url: string | null;
     min_interval_hours: number; max_notifications_per_30d: number; include_converted: boolean;
     conversion_window_days: number; audience_rules_json: Record<string, unknown>;
+    dispatch_mode: string; schedule_kind: string; next_dispatch_at: string | null; recurrence_days: number | null;
   }>(
     `SELECT name, objective, message_text, link_url, min_interval_hours,
-            max_notifications_per_30d, include_converted, conversion_window_days, audience_rules_json
+            max_notifications_per_30d, include_converted, conversion_window_days, audience_rules_json,
+            dispatch_mode, schedule_kind, next_dispatch_at, recurrence_days
        FROM campaigns WHERE id = $1 AND tenant_id = $2`,
     [id, u.tenantId],
   );
@@ -530,11 +765,13 @@ app.post('/api/v1/campaigns/:id/clone', requireAuth, async (c) => {
   await db.query(
     `INSERT INTO campaigns (id, tenant_id, name, objective, message_text, link_url,
        min_interval_hours, max_notifications_per_30d, include_converted,
-       conversion_window_days, audience_rules_json, status, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,'draft',$12)`,
+       conversion_window_days, audience_rules_json, dispatch_mode, schedule_kind,
+       next_dispatch_at, recurrence_days, status, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,'draft',$16)`,
     [newId, u.tenantId, `${orig.name} (cópia)`, orig.objective, orig.message_text, orig.link_url,
      orig.min_interval_hours, orig.max_notifications_per_30d, orig.include_converted,
-     orig.conversion_window_days, JSON.stringify(orig.audience_rules_json), u.sub],
+     orig.conversion_window_days, JSON.stringify(orig.audience_rules_json), orig.dispatch_mode,
+     orig.schedule_kind, orig.next_dispatch_at, orig.recurrence_days, u.sub],
   );
   await db.query(
     `INSERT INTO campaign_assets (id, tenant_id, campaign_id, asset_type, url, mime_type)
@@ -658,22 +895,22 @@ app.post('/api/v1/audiences/:id/evaluate', requireAuth, async (c) => {
 // WhatsApp
 // ---------------------------------------------------------------------------
 
-const WA_DEFAULT_URL = 'http://localhost:8081';
-const WA_DEFAULT_INSTANCE = 'samjoe';
 
-async function getTenantWaConfig(db: Database, tenantId: string) {
+async function getTenantWaConfig(db: Database, tenantId: string, envUrl?: string, envKey?: string) {
   const result = await db.query<{ settings_json: Record<string, unknown> | string }>(`SELECT settings_json FROM tenants WHERE id = $1`, [tenantId]);
   const row = result.rows[0];
   const settings = row ? (typeof row.settings_json === 'string' ? JSON.parse(row.settings_json) as Record<string, unknown> : row.settings_json) : {};
+  const defaultInstance = `t${tenantId.replace(/-/g, '').slice(0, 16)}`;
   return {
-    evolutionUrl: (settings.wa_evolution_url as string | undefined) ?? WA_DEFAULT_URL,
-    instanceName: (settings.wa_instance_name as string | undefined) ?? WA_DEFAULT_INSTANCE,
-    apiKey: (settings.wa_api_key as string | undefined) ?? '',
+    evolutionUrl: (settings.wa_evolution_url as string | undefined) ?? envUrl ?? 'http://localhost:8081',
+    instanceName: (settings.wa_instance_name as string | undefined) ?? defaultInstance,
+    apiKey: (settings.wa_api_key as string | undefined) ?? envKey ?? '',
     automationEnabled: (settings.wa_automation_enabled as boolean | undefined) ?? false,
+    alertNumbers: (settings.wa_alert_numbers as string[] | undefined) ?? [],
   };
 }
 
-async function saveTenantWaConfig(db: Database, tenantId: string, patch: { evolutionUrl?: string; instanceName?: string; apiKey?: string; automationEnabled?: boolean }) {
+async function saveTenantWaConfig(db: Database, tenantId: string, patch: { evolutionUrl?: string; instanceName?: string; apiKey?: string; automationEnabled?: boolean; alertNumbers?: string[] }) {
   const current = await db.query<{ settings_json: Record<string, unknown> | string }>(`SELECT settings_json FROM tenants WHERE id = $1`, [tenantId]);
   const row = current.rows[0];
   if (!row) throw new Error('Tenant not found');
@@ -682,6 +919,7 @@ async function saveTenantWaConfig(db: Database, tenantId: string, patch: { evolu
   if (patch.instanceName !== undefined) settings.wa_instance_name = patch.instanceName;
   if (patch.apiKey !== undefined) settings.wa_api_key = patch.apiKey;
   if (patch.automationEnabled !== undefined) settings.wa_automation_enabled = patch.automationEnabled;
+  if (patch.alertNumbers !== undefined) settings.wa_alert_numbers = patch.alertNumbers.filter(Boolean);
   await db.query(`UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`, [JSON.stringify(settings), tenantId]);
 }
 
@@ -692,19 +930,30 @@ function evoHeaders(apiKey: string): Record<string, string> {
 }
 
 app.get('/api/v1/integrations/whatsapp/config', requireAuth, async (c) => {
-  const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId);
-  return c.json({ data: { evolutionUrl: cfg.evolutionUrl, instanceName: cfg.instanceName, hasApiKey: !!cfg.apiKey, automationEnabled: cfg.automationEnabled } });
+  const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId, c.env.EVOLUTION_API_URL, c.env.EVOLUTION_API_KEY);
+  return c.json({ data: { evolutionUrl: cfg.evolutionUrl, instanceName: cfg.instanceName, hasApiKey: !!cfg.apiKey, automationEnabled: cfg.automationEnabled, alertNumbers: cfg.alertNumbers } });
 });
 
 app.put('/api/v1/integrations/whatsapp/config', requireAuth, async (c) => {
-  const body = await c.req.json() as { evolutionUrl?: string; instanceName?: string; apiKey?: string; automationEnabled?: boolean };
-  await saveTenantWaConfig(c.get('db'), c.get('user').tenantId, body);
+  const db = c.get('db');
+  const tenantId = c.get('user').tenantId;
+  const body = await c.req.json() as { evolutionUrl?: string; instanceName?: string; apiKey?: string; automationEnabled?: boolean; alertNumbers?: string[] };
+  await saveTenantWaConfig(db, tenantId, body);
+
+  if (body.automationEnabled === true) {
+    const webhookUrl = c.env.N8N_AUTOMATION_WEBHOOK_URL;
+    if (webhookUrl) {
+      const cfg = await getTenantWaConfig(db, tenantId, c.env.EVOLUTION_API_URL, c.env.EVOLUTION_API_KEY);
+      await configureEvolutionWebhook({ evolutionUrl: cfg.evolutionUrl, instanceName: cfg.instanceName, apiKey: cfg.apiKey, webhookUrl }).catch(() => {});
+    }
+  }
+
   return c.json({ data: { ok: true } });
 });
 
 app.get('/api/v1/integrations/whatsapp/qr', requireAuth, async (c) => {
   const db = c.get('db');
-  const cfg = await getTenantWaConfig(db, c.get('user').tenantId);
+  const cfg = await getTenantWaConfig(db, c.get('user').tenantId, c.env.EVOLUTION_API_URL, c.env.EVOLUTION_API_KEY);
   const headers = evoHeaders(cfg.apiKey);
   try {
     const createRes = await fetch(`${cfg.evolutionUrl}/instance/create`, {
@@ -712,7 +961,7 @@ app.get('/api/v1/integrations/whatsapp/qr', requireAuth, async (c) => {
       body: JSON.stringify({ instanceName: cfg.instanceName, integration: 'WHATSAPP-BAILEYS', qrcode: true }),
       signal: AbortSignal.timeout(8000),
     });
-    if (!createRes.ok && createRes.status !== 409) {
+    if (!createRes.ok && createRes.status !== 409 && createRes.status !== 403) {
       const errBody = await createRes.json().catch(() => ({})) as { message?: string };
       return c.json({ error: { code: 'EVOLUTION_ERROR', message: errBody.message ?? 'Erro ao criar instância WhatsApp' } }, 502);
     }
@@ -728,7 +977,7 @@ app.get('/api/v1/integrations/whatsapp/qr', requireAuth, async (c) => {
 });
 
 app.get('/api/v1/integrations/whatsapp/status', requireAuth, async (c) => {
-  const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId);
+  const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId, c.env.EVOLUTION_API_URL, c.env.EVOLUTION_API_KEY);
   try {
     const res = await fetch(`${cfg.evolutionUrl}/instance/connectionState/${cfg.instanceName}`, { headers: evoHeaders(cfg.apiKey), signal: AbortSignal.timeout(5000) });
     if (!res.ok) return c.json({ data: { state: 'offline', instanceName: cfg.instanceName } });
@@ -740,13 +989,57 @@ app.get('/api/v1/integrations/whatsapp/status', requireAuth, async (c) => {
 });
 
 app.delete('/api/v1/integrations/whatsapp/disconnect', requireAuth, async (c) => {
-  const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId);
+  const cfg = await getTenantWaConfig(c.get('db'), c.get('user').tenantId, c.env.EVOLUTION_API_URL, c.env.EVOLUTION_API_KEY);
   try {
     await fetch(`${cfg.evolutionUrl}/instance/logout/${cfg.instanceName}`, { method: 'DELETE', headers: evoHeaders(cfg.apiKey), signal: AbortSignal.timeout(8000) });
     return c.json({ data: { ok: true } });
   } catch {
     return c.json({ error: { code: 'EVOLUTION_UNAVAILABLE', message: 'Evolution API indisponível' } }, 502);
   }
+});
+
+app.get('/api/v1/integrations/whatsapp/responses', requireAuth, async (c) => {
+  const result = await c.get('db').query<{ settings_json: Record<string, unknown> | string }>(
+    `SELECT settings_json FROM tenants WHERE id = $1`, [c.get('user').tenantId],
+  );
+  const settings = result.rows[0]
+    ? (typeof result.rows[0].settings_json === 'string' ? JSON.parse(result.rows[0].settings_json) : result.rows[0].settings_json)
+    : {};
+  const saved = settings.wa_response_templates as Record<string, { enabled: boolean; message: string }> | undefined;
+  const templates: Record<string, { enabled: boolean; message: string }> = {};
+  for (const [key, def] of Object.entries(WA_DEFAULT_TEMPLATES)) {
+    templates[key] = saved?.[key] ?? def;
+  }
+  return c.json({ data: { templates } });
+});
+
+app.put('/api/v1/integrations/whatsapp/responses', requireAuth, async (c) => {
+  const db = c.get('db');
+  const tenantId = c.get('user').tenantId;
+  const body = await c.req.json() as { templates: Record<string, { enabled: boolean; message: string }> };
+  if (!body.templates || typeof body.templates !== 'object' || Array.isArray(body.templates)) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'templates deve ser um objeto' } }, 400);
+  }
+  for (const [key, template] of Object.entries(body.templates)) {
+    if (!(key in WA_DEFAULT_TEMPLATES)) {
+      return c.json({ error: { code: 'VALIDATION_ERROR', message: `Status de resposta inválido: ${key}` } }, 400);
+    }
+    if (!template || typeof template.enabled !== 'boolean' || typeof template.message !== 'string' || template.message.length > 1000) {
+      return c.json({ error: { code: 'VALIDATION_ERROR', message: `Template inválido: ${key}` } }, 400);
+    }
+  }
+  const current = await db.query<{ settings_json: Record<string, unknown> | string }>(
+    `SELECT settings_json FROM tenants WHERE id = $1`, [tenantId],
+  );
+  const row = current.rows[0];
+  if (!row) return c.json({ error: { code: 'NOT_FOUND', message: 'Tenant não encontrado' } }, 404);
+  const settings = typeof row.settings_json === 'string' ? JSON.parse(row.settings_json) as Record<string, unknown> : { ...row.settings_json };
+  settings.wa_response_templates = {
+    ...(settings.wa_response_templates as WaResponseTemplates | undefined),
+    ...body.templates,
+  };
+  await db.query(`UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`, [JSON.stringify(settings), tenantId]);
+  return c.json({ data: { ok: true } });
 });
 
 // ---------------------------------------------------------------------------
@@ -756,9 +1049,13 @@ app.delete('/api/v1/integrations/whatsapp/disconnect', requireAuth, async (c) =>
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
 app.get('/api/v1/integrations/samjoe-food', requireAuth, async (c) => {
-  const config = await getSamJoeFoodConfig(c.get('db'), c.get('user').tenantId);
-  if (!config) return c.json({ data: null }, 404);
-  return c.json({ data: config });
+  const db = c.get('db');
+  const tenantId = c.get('user').tenantId;
+  const config = await getSamJoeFoodConfig(db, tenantId);
+  if (!config) return c.json({ data: null });
+  const settingsRow = await db.query<{ settings_json: Record<string, unknown> | string }>(`SELECT settings_json FROM tenants WHERE id = $1`, [tenantId]);
+  const settings = settingsRow.rows[0] ? (typeof settingsRow.rows[0].settings_json === 'string' ? JSON.parse(settingsRow.rows[0].settings_json) as Record<string, unknown> : settingsRow.rows[0].settings_json) : {};
+  return c.json({ data: { ...config, food_app_url: (settings.food_app_url as string | undefined) ?? null } });
 });
 
 app.put('/api/v1/integrations/samjoe-food', requireAuth, async (c) => {
@@ -772,7 +1069,7 @@ app.put('/api/v1/integrations/samjoe-food', requireAuth, async (c) => {
 });
 
 app.post('/api/v1/integrations/samjoe-food/events', async (c) => {
-  const tenantId = c.req.header('x-tenant-id')?.trim();
+  const tenantId = (c.req.header('x-tenant-id') ?? c.req.query('tenant'))?.trim();
   if (!tenantId) return c.json({ error: { code: 'MISSING_TENANT', message: 'Header x-tenant-id obrigatório' } }, 400);
   const signature = c.req.header('x-samjoe-food-signature')?.trim() ?? '';
   const timestampHeader = c.req.header('x-samjoe-food-timestamp')?.trim() ?? '';
@@ -784,10 +1081,48 @@ app.post('/api/v1/integrations/samjoe-food/events', async (c) => {
   const rawBody = await c.req.text();
   if (!verifyHmac(secret, rawBody, signature)) return c.json({ error: { code: 'INVALID_SIGNATURE', message: 'Assinatura HMAC inválida' } }, 401);
   const event = JSON.parse(rawBody) as Parameters<typeof processSamJoeFoodEvent>[2];
-  const result = await processSamJoeFoodEvent(db, tenantId, event);
+  const result = await processSamJoeFoodEvent(db, tenantId, event, c.env.EVOLUTION_API_URL, c.env.EVOLUTION_API_KEY);
+  console.info(JSON.stringify({
+    type: 'samjoe_food_event',
+    eventType: result.event_type,
+    result: result.kind,
+    notification: 'notification' in result ? result.notification : undefined,
+  }));
   if (result.kind === 'ambiguous') return c.json({ accepted: true, note: 'ambiguous_contact', event_type: result.event_type });
   if (result.kind === 'duplicate') return c.json({ accepted: false, reason: 'duplicate', event_type: result.event_type });
-  return c.json({ accepted: true, event_type: result.event_type });
+  return c.json({ accepted: true, event_type: result.event_type, ...('notification' in result ? { notification: result.notification } : {}) });
+});
+
+app.post('/api/v1/integrations/samjoe-food/resync', requireAuth, async (c) => {
+  const db = c.get('db');
+  const u = c.get('user');
+  const settingsRow = await db.query<{ settings_json: Record<string, unknown> | string }>(`SELECT settings_json FROM tenants WHERE id = $1`, [u.tenantId]);
+  const settings = settingsRow.rows[0] ? (typeof settingsRow.rows[0].settings_json === 'string' ? JSON.parse(settingsRow.rows[0].settings_json) as Record<string, unknown> : settingsRow.rows[0].settings_json) : {};
+  const base = (settings.food_app_url as string | undefined)?.replace(/\/$/, '');
+  if (!base) return c.json({ error: { code: 'NOT_CONFIGURED', message: 'food_app_url não configurado' } }, 400);
+  const secret = await getSamJoeFoodSecret(db, u.tenantId);
+  if (!secret) return c.json({ error: { code: 'NO_SECRET', message: 'Integração não configurada' } }, 400);
+  const requestOrigin = new URL(c.req.url).origin;
+  const engineUrl = ((settings.app_url as string | undefined) ?? '').replace(/\/$/, '') || requestOrigin;
+  const webhookUrl = `${engineUrl}/api/v1/integrations/samjoe-food/events?tenant=${u.tenantId}`;
+  let synced = false;
+  let syncError: string | null = null;
+  try {
+    const res = await fetch(`${base}/api/admin/webhook-config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webhookUrl, hmacSecret: secret }),
+      signal: AbortSignal.timeout(6000),
+    });
+    synced = res.ok;
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({})) as { message?: string };
+      syncError = errBody.message ?? `HTTP ${res.status}`;
+    }
+  } catch (err) {
+    syncError = (err as Error).message ?? 'Erro ao contactar a loja';
+  }
+  return c.json({ data: { synced, syncError, webhookUrl } });
 });
 
 app.post('/api/v1/integrations/samjoe-food/detect', requireAuth, async (c) => {
@@ -813,8 +1148,9 @@ app.post('/api/v1/integrations/samjoe-food/auto-connect', requireAuth, async (c)
   const hmacSecret = randomBytes(32).toString('hex');
   const settingsRow = await db.query<{ settings_json: Record<string, unknown> | string }>(`SELECT settings_json FROM tenants WHERE id = $1`, [u.tenantId]);
   const settings = settingsRow.rows[0] ? (typeof settingsRow.rows[0].settings_json === 'string' ? JSON.parse(settingsRow.rows[0].settings_json) as Record<string, unknown> : settingsRow.rows[0].settings_json) : {};
-  const engineUrl = ((settings.app_url as string | undefined) ?? '').replace(/\/$/, '') || 'http://localhost:4010';
-  const webhookUrl = `${engineUrl}/api/v1/integrations/samjoe-food/events`;
+  const requestOrigin = new URL(c.req.url).origin;
+  const engineUrl = ((settings.app_url as string | undefined) ?? '').replace(/\/$/, '') || requestOrigin;
+  const webhookUrl = `${engineUrl}/api/v1/integrations/samjoe-food/events?tenant=${u.tenantId}`;
   await upsertSamJoeFoodConfig(db, u.tenantId, { hmacSecret, status: 'active' });
   settings.food_app_url = base;
   await db.query(`UPDATE tenants SET settings_json = $1::jsonb, updated_at = now() WHERE id = $2`, [JSON.stringify(settings), u.tenantId]);
@@ -880,6 +1216,31 @@ app.get('/api/v1/dispatch/recipients', requireAuth, async (c) => {
   return c.json({ data: result.rows, count: result.rows.length, total: parseInt(totalResult.rows[0]?.total ?? '0') });
 });
 
+app.get('/api/v1/dispatch/campaigns', requireAuth, async (c) => {
+  const db = c.get('db'); const u = c.get('user');
+  const result = await db.query(
+    `SELECT camp.id AS campaign_id, camp.name AS campaign_name, camp.status,
+            camp.schedule_kind, camp.next_dispatch_at, camp.recurrence_days,
+            camp.paused_at, camp.last_dispatched_at,
+            COUNT(r.id)::int AS total,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'queued')::int AS queued,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'dispatching')::int AS dispatching,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'sent')::int AS sent,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'delivered')::int AS delivered,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'read')::int AS read,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'failed')::int AS failed,
+            COUNT(*) FILTER (WHERE r.delivery_status = 'cancelled')::int AS cancelled,
+            MIN(r.queued_at) AS queued_at
+       FROM campaigns camp
+       JOIN campaign_recipients r ON r.campaign_id = camp.id AND r.tenant_id = camp.tenant_id
+      WHERE camp.tenant_id = $1 AND camp.archived_at IS NULL
+      GROUP BY camp.id
+      ORDER BY COALESCE(MIN(r.queued_at), camp.created_at) DESC`,
+    [u.tenantId],
+  );
+  return c.json({ data: result.rows });
+});
+
 app.post('/api/v1/dispatch/events', requireAuth, async (c) => {
   const db = c.get('db');
   const u = c.get('user');
@@ -894,6 +1255,78 @@ app.post('/api/v1/dispatch/events', requireAuth, async (c) => {
   if (result.kind === 'ignored') return c.json({ accepted: false, reason: (result as { kind: string; reason?: string }).reason });
   await writeAudit(db, { tenantId: u.tenantId, actorUserId: u.sub, entityType: 'campaign_recipient', entityId: body.recipientId, action: `dispatch.${body.eventType}`, metadata: { provider: body.provider, external_event_id: body.externalEventId } });
   return c.json({ accepted: true });
+});
+
+app.post('/api/v1/campaigns/:id/dispatch', requireAuth, async (c) => {
+  const u = c.get('user');
+  if (!['owner', 'manager'].includes(u.role)) {
+    return c.json({ error: { code: 'FORBIDDEN', message: 'Permissão insuficiente' } }, 403);
+  }
+  const campaign = await getCampaign(c.get('db'), u.tenantId, c.req.param('id'));
+  if (!campaign) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
+  if (!['approved', 'sending'].includes(String((campaign as { status: string }).status))) {
+    return c.json({ error: { code: 'CAMPAIGN_NOT_APPROVED', message: 'A campanha precisa estar aprovada antes do envio' } }, 409);
+  }
+  const result = await dispatchCampaignNow(c.get('db'), u.tenantId, c.req.param('id'), {
+    ...(c.env.EVOLUTION_API_URL ? { evolutionUrl: c.env.EVOLUTION_API_URL } : {}),
+    ...(c.env.EVOLUTION_API_KEY ? { apiKey: c.env.EVOLUTION_API_KEY } : {}),
+  });
+  if (result.kind === 'not_configured') {
+    return c.json({ error: { code: 'WHATSAPP_NOT_CONFIGURED', message: 'WhatsApp não configurado' } }, 409);
+  }
+  if (result.kind === 'paused') return c.json({ error: { code: 'CAMPAIGN_PAUSED', message: 'Retome a campanha antes de disparar' } }, 409);
+  return c.json({ data: result });
+});
+
+app.get('/api/v1/internal/campaign-queue', requireServiceKey, async (c) => {
+  const name = c.req.query('name')?.trim();
+  const where = name
+    ? 'lower(camp.name) = lower($1)'
+    : "r.delivery_status IN ('queued', 'dispatching')";
+  const params = name ? [name] : [];
+  const result = await c.get('db').query<{
+    id: string; tenant_id: string; name: string; status: string;
+    created_at: string; approved_at: string | null; delivery_status: string;
+    total: string; first_queued_at: string | null; last_queued_at: string | null;
+  }>(
+    `SELECT camp.id, camp.tenant_id, camp.name, camp.status,
+            camp.created_at, camp.approved_at, r.delivery_status,
+            COUNT(*)::text AS total, MIN(r.queued_at) AS first_queued_at,
+            MAX(r.queued_at) AS last_queued_at
+       FROM campaigns camp
+       JOIN campaign_recipients r ON r.campaign_id = camp.id AND r.tenant_id = camp.tenant_id
+      WHERE ${where}
+      GROUP BY camp.id, r.delivery_status
+      ORDER BY camp.created_at DESC, r.delivery_status`,
+    params,
+  );
+  return c.json({ data: result.rows });
+});
+
+app.post('/api/v1/internal/campaigns/:id/dispatch', requireServiceKey, async (c) => {
+  const body = await c.req.json().catch(() => null) as { confirmName?: string } | null;
+  const campaignId = c.req.param('id');
+  const campaignResult = await c.get('db').query<{ tenant_id: string; name: string; status: string }>(
+    `SELECT tenant_id, name, status FROM campaigns WHERE id = $1`,
+    [campaignId],
+  );
+  const campaign = campaignResult.rows[0];
+  if (!campaign) return c.json({ error: { code: 'CAMPAIGN_NOT_FOUND', message: 'Campanha não encontrada' } }, 404);
+  if (!body?.confirmName || body.confirmName !== campaign.name) {
+    return c.json({ error: { code: 'CONFIRMATION_MISMATCH', message: 'Confirmação da campanha não confere' } }, 409);
+  }
+  if (!['approved', 'sending'].includes(campaign.status)) {
+    return c.json({ error: { code: 'CAMPAIGN_NOT_APPROVED', message: 'A campanha precisa estar aprovada antes do envio' } }, 409);
+  }
+  const result = await dispatchCampaignNow(c.get('db'), campaign.tenant_id, campaignId, {
+    ...(c.env.EVOLUTION_API_URL ? { evolutionUrl: c.env.EVOLUTION_API_URL } : {}),
+    ...(c.env.EVOLUTION_API_KEY ? { apiKey: c.env.EVOLUTION_API_KEY } : {}),
+  });
+  if (result.kind === 'not_configured') {
+    return c.json({ error: { code: 'WHATSAPP_NOT_CONFIGURED', message: 'WhatsApp não configurado' } }, 409);
+  }
+  if (result.kind === 'paused') return c.json({ error: { code: 'CAMPAIGN_PAUSED', message: 'Campanha pausada' } }, 409);
+  return c.json({ data: result });
 });
 
 // ---------------------------------------------------------------------------

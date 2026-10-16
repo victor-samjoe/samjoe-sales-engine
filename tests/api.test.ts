@@ -1,5 +1,5 @@
 ﻿import { afterEach, describe, expect, it } from 'vitest';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { createTestDatabase, seedTestTenant } from './helpers/test-db.js';
@@ -59,7 +59,7 @@ describe('API foundation', () => {
   });
 
   it('logs in and creates tenant-scoped contacts', async () => {
-    const { app, seeded } = await setup();
+    const { app, db, seeded } = await setup();
     const token = await login(app, seeded);
     expect(token).toBeTruthy();
 
@@ -129,11 +129,100 @@ describe('API foundation', () => {
       },
     });
     expect(consent.statusCode).toBe(201);
+
+    const contactsAfterConsent = await app.inject({
+      method: 'GET', url: '/api/v1/contacts', headers: { authorization: `Bearer ${token}` },
+    });
+    const updatedContact = contactsAfterConsent.json<{ data: Array<{ id: string; marketing_consent_status: string | null }> }>()
+      .data.find((item) => item.id === contactId);
+    expect(updatedContact?.marketing_consent_status).toBe('revoked');
     const projection = await db.query<{ do_not_contact: boolean }>(
       'SELECT do_not_contact FROM contacts WHERE id = $1 AND tenant_id = $2',
       [contactId, seeded.tenantId],
     );
     expect(projection.rows[0]?.do_not_contact).toBe(true);
+  });
+
+  it('grants defaults to new contacts and fills only missing legacy consents', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const headers = { authorization: `Bearer ${token}` };
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers,
+      payload: { fullName: 'Contato com padrão', phone: '(11) 93333-1000', origin: 'manual' },
+    });
+    const createdId = created.json<{ id: string }>().id;
+    const defaults = await db.query<{ purpose: string; action: string }>(
+      `SELECT purpose, action FROM se_consent_events
+        WHERE tenant_id = $1 AND contact_id = $2 ORDER BY purpose`,
+      [seeded.tenantId, createdId],
+    );
+    expect(defaults.rows).toEqual([
+      { purpose: 'marketing', action: 'granted' },
+      { purpose: 'order_updates', action: 'granted' },
+    ]);
+
+    const legacyId = randomUUID();
+    const revokedId = randomUUID();
+    await db.query(
+      `INSERT INTO contacts (id, tenant_id, full_name, phone_e164, origin)
+       VALUES ($1,$2,'Legado pendente','+5511933331001','manual'),
+              ($3,$2,'Legado revogado','+5511933331002','manual')`,
+      [legacyId, seeded.tenantId, revokedId],
+    );
+    await db.query(
+      `INSERT INTO se_consent_events
+        (id, tenant_id, contact_id, channel, purpose, action, source, policy_version, occurred_at)
+       VALUES ($1,$2,$3,'whatsapp','marketing','revoked','manual','1.0',$4)`,
+      [randomUUID(), seeded.tenantId, revokedId, new Date().toISOString()],
+    );
+
+    const bulk = await app.inject({ method: 'POST', url: '/api/v1/contacts/consents/bulk-defaults', headers });
+    expect(bulk.statusCode).toBe(200);
+    expect(bulk.json<{ data: { contacts_updated: number; events_created: number } }>().data)
+      .toEqual({ contacts_updated: 2, events_created: 3 });
+    const revoked = await db.query<{ action: string }>(
+      `SELECT action FROM se_consent_events
+        WHERE tenant_id = $1 AND contact_id = $2 AND purpose = 'marketing'
+        ORDER BY occurred_at DESC, created_at DESC`,
+      [seeded.tenantId, revokedId],
+    );
+    expect(revoked.rows[0]?.action).toBe('revoked');
+  });
+
+  it('edits, archives, deletes and imports contacts in bulk', async () => {
+    const { app, seeded } = await setup();
+    const token = await login(app, seeded);
+    const headers = { authorization: `Bearer ${token}` };
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers,
+      payload: { fullName: 'Contato Gerenciável', phone: '(11) 98888-1111', origin: 'manual' },
+    });
+    const contactId = created.json<{ id: string }>().id;
+
+    const edited = await app.inject({
+      method: 'PATCH', url: `/api/v1/contacts/${contactId}`, headers,
+      payload: { fullName: 'Contato Editado', email: 'editado@example.test', tags: ['vip'] },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json<{ full_name: string }>().full_name).toBe('Contato Editado');
+
+    const bulk = await app.inject({
+      method: 'POST', url: '/api/v1/contacts/bulk', headers,
+      payload: { contacts: [
+        { fullName: 'Lote Um', phone: '(11) 97777-1001', origin: 'manual' },
+        { fullName: 'Lote Dois', phone: '(11) 97777-1002', origin: 'instagram' },
+      ] },
+    });
+    expect(bulk.statusCode).toBe(201);
+    expect(bulk.json<{ data: { created: unknown[] } }>().data.created).toHaveLength(2);
+
+    const archived = await app.inject({ method: 'POST', url: `/api/v1/contacts/${contactId}/archive`, headers });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json<{ archived_at: string }>().archived_at).toBeTruthy();
+
+    const deleted = await app.inject({ method: 'DELETE', url: `/api/v1/contacts/${contactId}`, headers });
+    expect(deleted.statusCode).toBe(204);
   });
 
   it('creates a campaign and generates an eligibility preflight without sending', async () => {
@@ -153,9 +242,17 @@ describe('API foundation', () => {
         policyVersion: '1.0', occurredAt: new Date().toISOString(),
       },
     });
-    await app.inject({
+    const noConsentContact = await app.inject({
       method: 'POST', url: '/api/v1/contacts', headers: authorization,
       payload: { fullName: 'Cliente Sem Consentimento', phone: '(11) 98888-2222', origin: 'manual' },
+    });
+    const noConsentId = noConsentContact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${noConsentId}/consents`, headers: authorization,
+      payload: {
+        channel: 'whatsapp', purposes: ['marketing'], action: 'revoked', source: 'manual',
+        policyVersion: '1.0', occurredAt: new Date(Date.now() + 1000).toISOString(),
+      },
     });
 
     const created = await app.inject({
@@ -238,7 +335,7 @@ describe('API foundation', () => {
   });
 
   it('approves campaign and queues eligible recipients', async () => {
-    const { app, seeded } = await setup();
+    const { app, db, seeded } = await setup();
     const token = await login(app, seeded);
     const h = { authorization: `Bearer ${token}` };
 
@@ -263,6 +360,7 @@ describe('API foundation', () => {
     const approve = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
     expect(approve.statusCode).toBe(200);
     expect(approve.json<{ queued: number }>().queued).toBe(1);
+    await db.query('UPDATE campaigns SET next_dispatch_at = now() WHERE id = $1 AND tenant_id = $2', [campaignId, seeded.tenantId]);
 
     const jobs = await app.inject({ method: 'GET', url: '/api/v1/dispatch/jobs', headers: h });
     expect(jobs.statusCode).toBe(200);
@@ -296,6 +394,7 @@ describe('API foundation', () => {
     const campaignId = camp.json<{ id: string }>().id;
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+    await db.query('UPDATE campaigns SET next_dispatch_at = now() WHERE id = $1 AND tenant_id = $2', [campaignId, seeded.tenantId]);
 
     const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
     const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0]!.recipient_id;
@@ -348,7 +447,6 @@ describe('API foundation', () => {
     const campaignId = camp.json<{ id: string }>().id;
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
-
     const cancel = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/cancel`, headers: h });
     expect(cancel.statusCode).toBe(200);
     expect(cancel.json<{ cancelled: number }>().cancelled).toBe(1);
@@ -358,6 +456,48 @@ describe('API foundation', () => {
 
     const cancelAgain = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/cancel`, headers: h });
     expect(cancelAgain.statusCode).toBe(409);
+  });
+
+  it('deletes unsent campaigns and archives campaigns with dispatch history', async () => {
+    const { app, db, seeded } = await setup();
+    const token = await login(app, seeded);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const draft = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers,
+      payload: { name: 'Rascunho descartÃ¡vel', messageText: 'Ainda nÃ£o enviada' },
+    });
+    const draftId = draft.json<{ id: string }>().id;
+    const deleted = await app.inject({ method: 'DELETE', url: `/api/v1/campaigns/${draftId}`, headers });
+    expect(deleted.statusCode).toBe(204);
+
+    const contact = await app.inject({
+      method: 'POST', url: '/api/v1/contacts', headers,
+      payload: { fullName: 'Cliente com histÃ³rico', phone: '(11) 94444-1234', origin: 'whatsapp' },
+    });
+    const contactId = contact.json<{ id: string }>().id;
+    await app.inject({
+      method: 'POST', url: `/api/v1/contacts/${contactId}/consents`, headers,
+      payload: { channel: 'whatsapp', purposes: ['marketing'], action: 'granted', source: 'whatsapp', policyVersion: '1.0', occurredAt: new Date().toISOString() },
+    });
+    const campaign = await app.inject({
+      method: 'POST', url: '/api/v1/campaigns', headers,
+      payload: { name: 'Campanha com histÃ³rico', messageText: 'Mensagem enviada' },
+    });
+    const campaignId = campaign.json<{ id: string }>().id;
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers });
+    await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers });
+    await db.query('UPDATE campaigns SET next_dispatch_at = now() WHERE id = $1 AND tenant_id = $2', [campaignId, seeded.tenantId]);
+    const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers });
+    expect(jobs.json<{ count: number }>().count).toBe(1);
+
+    const blockedDelete = await app.inject({ method: 'DELETE', url: `/api/v1/campaigns/${campaignId}`, headers });
+    expect(blockedDelete.statusCode).toBe(409);
+    expect(blockedDelete.json<{ error: { code: string } }>().error.code).toBe('CAMPAIGN_HAS_HISTORY');
+
+    const archived = await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/archive`, headers });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json<{ data: { archived: boolean } }>().data.archived).toBe(true);
   });
 });
 
@@ -495,6 +635,7 @@ describe('SamJoE Food integration (Fase 4)', () => {
     const campaignId = camp.json<{ id: string }>().id;
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+    await db.query('UPDATE campaigns SET next_dispatch_at = now() WHERE id = $1 AND tenant_id = $2', [campaignId, seeded.tenantId]);
 
     const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
     const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0]!.recipient_id;
@@ -655,6 +796,7 @@ describe('Analytics (dashboard de conversões)', () => {
     const campaignId = camp.json<{ id: string }>().id;
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/preflight`, headers: h });
     await app.inject({ method: 'POST', url: `/api/v1/campaigns/${campaignId}/approve`, headers: h });
+    await db.query('UPDATE campaigns SET next_dispatch_at = now() WHERE id = $1 AND tenant_id = $2', [campaignId, seeded.tenantId]);
 
     const jobs = await app.inject({ method: 'GET', url: `/api/v1/dispatch/jobs?campaign_id=${campaignId}`, headers: h });
     const recipientId = jobs.json<{ data: Array<{ recipient_id: string }> }>().data[0]!.recipient_id;

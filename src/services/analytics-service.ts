@@ -256,7 +256,7 @@ export async function getCampaignAnalytics(db: Database, tenantId: string): Prom
     const delivered = d.delivered ?? 0;
     const read = d.read ?? 0;
     const engaged = delivered + read;
-    const recipients = (d.queued ?? 0) + (d.sent ?? 0) + delivered + read + (d.failed ?? 0);
+    const recipients = (d.queued ?? 0) + (d.dispatching ?? 0) + (d.sent ?? 0) + delivered + read + (d.failed ?? 0);
     return {
       id: c.id,
       name: c.name,

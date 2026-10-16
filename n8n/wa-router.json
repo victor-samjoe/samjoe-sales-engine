@@ -1,0 +1,571 @@
+{
+  "id": "NYhXfRKD6xMbCeLV",
+  "name": "WA Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-pedidos-bolo-mvp",
+        "options": {}
+      },
+      "id": "b17e75ac-ae1a-44bb-a2d3-f601bf1ca63e",
+      "name": "Webhook Evolution1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -3136,
+        976
+      ],
+      "webhookId": "72426767-95e5-4351-b281-13cf2e7dfb81"
+    },
+    {
+      "id": "extract-body-001",
+      "name": "Extrair body1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        310,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const b = $input.first().json.body;\nreturn [{ json: b }];"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-event",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "messages.upsert",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "22837240-691e-44f7-892a-b023b4a8793a",
+      "name": "É messages.upsert?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2912,
+        976
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst fromMe = item.data?.key?.fromMe;\nconst remoteJid = item.data?.key?.remoteJid || '';\nif (fromMe === false && !remoteJid.includes('@g.us')) {\n  return [{ json: item }];\n}\nreturn [];"
+      },
+      "id": "a3b27722-70f3-4949-9c34-1310c6583ec2",
+      "name": "Não é fromMe nem grupo?1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2704,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst remoteJid = item.data?.key?.remoteJid || '';\nconst phoneRaw = remoteJid.split('@')[0];\nconst phone = '+' + phoneRaw;\nconst msg = item.data?.message || {};\nconst text = (msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || msg.videoMessage?.caption || '').trim();\nconst pushName = item.data?.pushName || '';\nreturn [{ json: { phone, phoneRaw, text, pushName } }];"
+      },
+      "id": "b2c08710-0a93-47ee-a503-e6248b981b83",
+      "name": "Extrair dados1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2480,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-text",
+              "leftValue": "={{ $json.text }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals",
+                "rightType": "string"
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "52afc6e6-c43c-4b83-b6a0-a13fee0bf652",
+      "name": "Tem texto?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2256,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://samjoe-sales-engine.victor-conceicao.workers.dev/api/v1/contacts/wa-context",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "phone",
+              "value": "={{ $json.phone }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-service-key",
+              "value": "={{ $env.SALES_ENGINE_SERVICE_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a178e2d5-6ca3-47c3-8969-f4a14c9eb001",
+      "name": "WA Context1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2032,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst ex = $('Extrair dados1').first().json;\nconst text = ex.text.toLowerCase().trim();\nconst optOutKws = ['sair', 'stop', 'parar', 'cancelar', 'descadastrar'];\nconst isOptOut = optOutKws.some(kw => text === kw || text.startsWith(kw + ' '));\nconst statusMap = {\n  ORDER_RECEIVED: 'Recebido 📋',\n  CONFIRMED: 'Confirmado ✅',\n  IN_PREPARATION: 'Em preparo 🧁',\n  READY: 'Pronto ✅',\n  READY_FOR_PICKUP: 'Pronto para retirada 📦',\n  OUT_FOR_DELIVERY: 'Saiu para entrega 🚗',\n};\nconst d = ctx.data || {};\nconst legacyOrder = d.openOrderRef ? [{ ref: d.openOrderRef, status: d.openOrderStatus }] : [];\nconst openOrders = (Array.isArray(d.openOrders) && d.openOrders.length ? d.openOrders : legacyOrder).map(order => ({\n  ...order,\n  statusLabel: statusMap[order.status] || order.status || 'Em andamento',\n}));\nconst orderStatusMessage = openOrders.length === 1\n  ? 'Seu pedido *' + openOrders[0].ref + '* está com status: *' + openOrders[0].statusLabel + '* 🍰\\n\\nAssim que tiver novidade, você recebe aqui!'\n  : 'Você tem *' + openOrders.length + ' pedidos em aberto* 🍰\\n\\n' + openOrders.map(order => '• *' + order.ref + '* — ' + order.statusLabel).join('\\n') + '\\n\\nAssim que tiver novidade, você recebe aqui!';\nreturn [{ json: {\n  phone: ex.phone,\n  phoneRaw: ex.phoneRaw,\n  text: ex.text,\n  pushName: ex.pushName,\n  exists: d.exists ?? false,\n  hasOpenOrder: openOrders.length > 0,\n  openOrders,\n  orderStatusMessage,\n  consentOrderUpdates: d.consentOrderUpdates ?? false,\n  isOptOut,\n} }];"
+      },
+      "id": "fab90478-006c-4110-9d4c-bd38e2593405",
+      "name": "Mesclar e detectar opt-out1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1824,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-optout",
+              "leftValue": "={{ $json.isOptOut }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "578c8970-012b-4306-9940-9f7620fcbc35",
+      "name": "É opt-out?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1600,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_BASE_URL + '/message/sendText/' + $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "={{ $json.phoneRaw }}"
+            },
+            {
+              "name": "text",
+              "value": "Tudo bem! Você foi removido das notificações. Se quiser voltar a receber atualizações, é só mandar *OI* aqui! 🍰"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "731604c2-b18f-44d3-a89a-a26b58a81a6f",
+      "name": "Enviar confirmação opt-out1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1376,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-order",
+              "leftValue": "={{ $json.hasOpenOrder }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "5862ba87-8613-4a96-bf28-e832e90bb46e",
+      "name": "Tem pedido aberto?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1376,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_BASE_URL + '/message/sendText/' + $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "={{ $json.phoneRaw }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.orderStatusMessage }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a455337b-d965-4349-9f5a-1eeb705553be",
+      "name": "Enviar status do pedido1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1152,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-new",
+              "leftValue": "={{ $json.exists }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              },
+              "rightValue": false
+            }
+          ],
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "569bbee1-aded-4903-a69f-9a9b5a0b375e",
+      "name": "É novo contato?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1152,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_BASE_URL + '/message/sendText/' + $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "={{ $json.phoneRaw }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ 'Olá' + ($json.pushName ? ', ' + $json.pushName : '') + '! 😊 Sou o assistente da *SamJoE Confeitaria*.\\n\\nPara fazer seu pedido, acesse nossa loja:\\n' + $env.APPS_SCRIPT_MVP_URL + '\\n\\nQualquer dúvida, é só chamar! 🎂' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5ded2f55-65ee-4531-b25e-d6fceb7b4196",
+      "name": "Enviar boas-vindas1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -944,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_BASE_URL + '/message/sendText/' + $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "={{ $json.phoneRaw }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ 'Olá de novo, ' + ($json.pushName || 'tudo bem') + '! 😊 Que bom te ver por aqui!\\n\\nAcesse nossa loja para fazer seu pedido:\\n' + $env.APPS_SCRIPT_MVP_URL + '\\n\\nQualquer dúvida, é só chamar! 🍰' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fad2ac7c-d076-49d2-8070-c78447888473",
+      "name": "Enviar link da loja1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -944,
+        1200
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Evolution1": {
+      "main": [
+        [
+          {
+            "node": "Extrair body1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É messages.upsert?1": {
+      "main": [
+        [
+          {
+            "node": "Não é fromMe nem grupo?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Não é fromMe nem grupo?1": {
+      "main": [
+        [
+          {
+            "node": "Extrair dados1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair dados1": {
+      "main": [
+        [
+          {
+            "node": "Tem texto?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem texto?1": {
+      "main": [
+        [
+          {
+            "node": "WA Context1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WA Context1": {
+      "main": [
+        [
+          {
+            "node": "Mesclar e detectar opt-out1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mesclar e detectar opt-out1": {
+      "main": [
+        [
+          {
+            "node": "É opt-out?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É opt-out?1": {
+      "main": [
+        [
+          {
+            "node": "Enviar confirmação opt-out1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tem pedido aberto?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem pedido aberto?1": {
+      "main": [
+        [
+          {
+            "node": "Enviar status do pedido1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "É novo contato?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É novo contato?1": {
+      "main": [
+        [
+          {
+            "node": "Enviar boas-vindas1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar link da loja1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair body1": {
+      "main": [
+        [
+          {
+            "node": "É messages.upsert?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}
